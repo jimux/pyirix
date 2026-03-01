@@ -1,0 +1,2 @@
+# pyirix — no runtime dependencies (stdlib only)
+# Install dev dependencies with: pip install -e ".[dev]"
