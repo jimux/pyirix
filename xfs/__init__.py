@@ -1,7 +1,8 @@
-"""XFS filesystem read/write for SGI disk images.
+"""XFS filesystem read/write/create for SGI disk images.
 
-Supports IRIX V1 and V4 XFS filesystems. Provides both a library API
-and a CLI (python3 -m pyirix.xfs).
+Supports IRIX V1 and V4 XFS filesystems: read, write, create from scratch
+(mkfs), and diagnose/repair. Provides both a library API and a CLI
+(python3 -m pyirix.xfs).
 """
 
 # Image layer
@@ -112,6 +113,9 @@ from pyirix.xfs.operations import (
     create_file,
     write_file,
     delete_file,
+    create_symlink,
+    mknod,
+    read_dev,
     mkdir,
     rmdir,
     chmod,
@@ -126,4 +130,19 @@ from pyirix.xfs.constants import (
     XFSPathError,
     XFSExistsError,
     XFSNotEmptyError,
+)
+
+# Create (mkfs) — build an IRIX V1-directory XFS from scratch
+from pyirix.xfs.mkfs import mkfs_xfs, make_xfs_image
+
+# Diagnose / repair
+from pyirix.xfs.repair import (
+    check_xfs,
+    repair_xfs,
+    repair_version_bits,
+    recover_superblock,
+    clean_log,
+    find_secondary_superblock,
+    CheckReport,
+    Finding,
 )

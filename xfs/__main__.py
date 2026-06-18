@@ -351,6 +351,42 @@ def _print_results(results):
         print(f"  {marker} {msg}")
 
 
+def cmd_mkfs(args):
+    """Create an IRIX V1-directory XFS image from scratch."""
+    from pyirix.xfs.mkfs import mkfs_xfs
+    mkfs_xfs(args.image, size_mb=args.size_mb, agcount=args.agcount,
+             with_volume_header=not args.raw, label=args.label or "")
+    import os
+    print(f"Created {args.image} ({os.path.getsize(args.image)} bytes): "
+          f"{args.size_mb}MB, {args.agcount} AG(s), "
+          f"{'raw partition' if args.raw else 'with SGI volume header'}")
+    return 0
+
+
+def cmd_repair(args):
+    """Diagnose and optionally repair an XFS image."""
+    from pyirix.xfs.repair import check_xfs, repair_xfs
+    with open_disk_image(args.image, writable=args.fix) as f:
+        part = find_xfs_partition(f)
+        part_offset = part[0] if part else 0   # raw image -> offset 0
+        if not args.fix:
+            report = check_xfs(f, part_offset)
+            for finding in report:
+                print(f"  [{finding.level}] {finding.code}: {finding.msg}")
+            print(f"\n{report.summary()} — "
+                  f"{'OK' if report.ok else ('REPAIRABLE' if report.repairable else 'UNREPAIRABLE')}")
+            return 0 if report.ok else 1
+        report, actions = repair_xfs(f, part_offset, dry_run=False)
+        for finding in report:
+            print(f"  [{finding.level}] {finding.code}: {finding.msg}")
+        for name, result in actions:
+            mark = 'fixed' if result.get('changed') else 'no-op'
+            print(f"  -> {name} [{mark}]: {result['reason']}")
+        after = check_xfs(f, part_offset)
+        print(f"\nafter repair: {after.summary()} — {'OK' if after.ok else 'still failing'}")
+        return 0 if after.ok else 1
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog='python3 -m pyirix.xfs',
@@ -410,6 +446,22 @@ def main():
     p_check = subparsers.add_parser('check', help='Filesystem check')
     p_check.add_argument('image', help='Disk image path')
 
+    # mkfs
+    p_mkfs = subparsers.add_parser('mkfs', help='Create an IRIX V1 XFS image')
+    p_mkfs.add_argument('image', help='Output image path')
+    p_mkfs.add_argument('--size-mb', type=int, default=16, help='Filesystem size (MB)')
+    p_mkfs.add_argument('--agcount', type=int, default=1, help='Allocation groups')
+    p_mkfs.add_argument('--label', default='', help='Volume label (<=6 chars)')
+    p_mkfs.add_argument('--raw', action='store_true',
+                        help='Write a raw partition (no SGI volume header)')
+
+    # repair
+    p_repair = subparsers.add_parser('repair',
+                                     help='Diagnose (and with --fix, repair) an image')
+    p_repair.add_argument('image', help='Disk image path')
+    p_repair.add_argument('--fix', action='store_true',
+                          help='Apply repairs (default: dry-run report only)')
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -424,6 +476,8 @@ def main():
         'mkdir': cmd_mkdir,
         'rm': cmd_rm,
         'check': cmd_check,
+        'mkfs': cmd_mkfs,
+        'repair': cmd_repair,
     }
 
     return commands[args.command](args)

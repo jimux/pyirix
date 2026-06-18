@@ -45,14 +45,29 @@ def elf_syms(elf):
 
 
 def extract_unix(image, kpath):
-    sys.path.insert(0, "/workspace")
-    from sgi_mcp.server import _handle_tool
+    """Extract a single file (e.g. /unix) from an XFS disk image to a temp
+    dir and return its host path. Pure pyirix — handles raw and qcow2."""
+    from pyirix.xfs.image import open_disk_image, find_xfs_partition
+    from pyirix.xfs.superblock import read_superblock
+    from pyirix.xfs.inode import read_inode, read_file_data
+    from pyirix.xfs.operations import resolve_path
+
     dest = tempfile.mkdtemp(prefix="kunix_")
-    _handle_tool("fs_extract", {"image": image, "dest": dest, "path": kpath})
-    for root, _, files in os.walk(dest):
-        for f in files:
-            return os.path.join(root, f)
-    raise RuntimeError(f"{kpath} not found in {image}")
+    with open_disk_image(image) as f:
+        part = find_xfs_partition(f)
+        if not part:
+            raise RuntimeError(f"no XFS partition in {image}")
+        off, _ = part
+        sb = read_superblock(f, off)
+        ino = resolve_path(f, off, sb, kpath)
+        if ino is None:
+            raise RuntimeError(f"{kpath} not found in {image}")
+        inode = read_inode(f, off, sb, ino)
+        data = read_file_data(f, off, sb, inode)
+    out = os.path.join(dest, os.path.basename(kpath))
+    with open(out, "wb") as fh:
+        fh.write(data)
+    return out
 
 
 def cmd_gen(a):

@@ -1,19 +1,32 @@
 # pyirix
 
-Python library for working with SGI/IRIX software. Reads SGI EFS filesystems
-and parses IRIX distribution packages and spec files. **No QEMU required.**
+Python library for working with SGI/IRIX software. It reads the two SGI on-disk filesystems (**EFS** and **XFS**), parses and reasons about IRIX distribution media (**`.idb`/spec/`.sw`** packaging), and provides a toolkit for **statically analyzing and live-debugging** IRIX MIPS binaries. The filesystem and packaging tools are pure standard-library Python and need no QEMU; only the live kernel debugger talks to a running guest.
 
-For QEMU orchestration tools (session management, disk creation, automated
-installation, disc image catalog), see the companion `pyirix_qemu` package.
+For QEMU orchestration (session management, disk creation, automated installation, the disc-image catalog), see the companion `pyirix_qemu` package.
+
+---
+
+## At a glance
+
+| Subpackage | What it covers | QEMU? | In-depth docs |
+|------------|----------------|-------|---------------|
+| `pyirix.efs` | Read/extract **and create (mkfs)** SGI EFS images; diagnose/repair | No | [docs/efs.md](docs/efs.md) |
+| `pyirix.xfs` | Full **read + write + create (mkfs)** of SGI XFS (incl. IRIX V1 dirs); diagnose/repair; raw and qcow2 | No (qcow2 needs `qemu-img`) | [docs/xfs.md](docs/xfs.md) |
+| `pyirix.dist` | Parse `.idb`/spec/`.sw` packaging; dependency/conflict analysis; build composite install images | No | [docs/dist.md](docs/dist.md) |
+| `pyirix.debug` | Static ELF analysis (disasm, symbols, xrefs, DWARF) + a live `gdb-multiarch` driver | Only `guest_gdb` | [docs/debug.md](docs/debug.md) |
+| `pyirix.prom` | SGI PROM support: KSEG address math, platform definitions, PROM file loader (used by `pyirix.debug` disassembly) | No | — |
+
+Every subpackage exposes both a **library API** and a **CLI** (`python3 -m pyirix.<pkg>...`).
 
 ---
 
 ## Dependencies
 
 - Python 3.8+
-- Standard library only (no third-party dependencies)
-- Optional: `capstone` for disassembly in the analysis tools (`sgi_mcp`), but
-  not required by `pyirix` itself
+- Standard library only for `pyirix.efs`, `pyirix.xfs`, and `pyirix.dist`
+- `pyirix.xfs` shells out to `qemu-img` only when operating on **qcow2** images (raw images need nothing)
+- Optional: `capstone` for the MIPS disassembly helpers in `pyirix.debug` (`mips_disasm`, `disasm`); the PROM support they need lives in the self-contained `pyirix.prom` subpackage
+- `pyirix.debug.guest_gdb` additionally needs `gdb-multiarch` and a QEMU process exposing a gdbstub (`-gdb`)
 
 ---
 
@@ -21,141 +34,25 @@ installation, disc image catalog), see the companion `pyirix_qemu` package.
 
 ```bash
 # Editable install from source
-pip install -e /path/to/workspace/pyirix
+pip install -e /path/to/qemu-sgi/pyirix
 
-# Or just add to PYTHONPATH
-export PYTHONPATH=/path/to/workspace:$PYTHONPATH
+# Or just add the project root to PYTHONPATH
+export PYTHONPATH=/path/to/qemu-sgi:$PYTHONPATH
 ```
 
 ---
 
-## `pyirix.efs` — EFS Filesystem Tools
+## Documentation
 
-Reads and extracts SGI EFS (Extent File System) partitions from raw disc images.
-Handles the SGI disk volume header, partition tables, superblocks, inodes,
-extents, and symlinks.
+In-depth guides live in [`docs/`](docs/). Each subpackage's full API, usage, CLI, and gotchas are broken out there; this README stays an overview.
 
-### Key functions
-
-```python
-from pyirix.efs.reader import (
-    find_efs_partition,   # Locate EFS partition in a disc image
-    read_superblock,      # Parse EFS superblock
-    read_inode,           # Read a single inode
-    extract_recursive,    # Extract a directory tree
-    EFS_ROOT_INODE,       # Inode number of the root directory (2)
-)
-```
-
-### Usage
-
-```python
-from pyirix.efs.reader import find_efs_partition, read_superblock, extract_recursive, EFS_ROOT_INODE
-
-with open("Foundation1.img", "rb") as f:
-    # Find the EFS partition inside the SGI disk image
-    result = find_efs_partition(f)
-    if not result:
-        print("No EFS partition found")
-    else:
-        part_offset, part_size = result
-        sb = read_superblock(f, part_offset)
-
-        # Extract only the dist/ directory
-        stats = extract_recursive(
-            f, part_offset, sb, EFS_ROOT_INODE,
-            current_path="/", dest_dir="/tmp/extracted",
-            path_filter="dist"
-        )
-        print(f"Extracted {stats['files']} files, {stats['symlinks']} symlinks")
-```
-
-### CLI
-
-```bash
-# Show partition info
-python -m pyirix.efs.reader info Foundation1.img
-
-# List filesystem contents
-python -m pyirix.efs.reader list Foundation1.img
-
-# Extract to a directory
-python -m pyirix.efs.reader extract Foundation1.img /tmp/output
-```
-
-### Bulk extraction
-
-```python
-from pyirix.efs.extract import extract_cd_set
-
-# Extract dist/ from all CDs in a directory
-extract_cd_set("/path/to/images", "/tmp/staging")
-```
-
----
-
-## `pyirix.dist` — IRIX Distribution Package Analysis
-
-Parses IRIX distribution `.idb` spec files, resolves package dependencies, detects conflicts, and simulates installation state. Also provides tools to combine multiple distribution directories into a single composite image. Note that the exact behavior of `Inst>` isn't clearly defined in some cases, and this is a best-effort. Some quirks of resolution I haven't been able to replicate, namely around malformed `.idb` files.
-
-### Key classes and functions
-
-```python
-from pyirix.dist.analyzer import Corpus, parse_idb_subsystems
-
-# Load all .idb files from a dist directory
-corpus = Corpus.load_dir("/path/to/dist")
-
-# Check for file conflicts on an Indy (IP24) hardware config
-conflicts = corpus.conflicts(hw="IP24")
-
-# Parse subsystems from a single .idb file
-subsystems = parse_idb_subsystems("/path/to/dist/eoe.sw.idb")
-for name, info in subsystems.items():
-    print(f"{name}: {info['files']} files, {info['total_size']} bytes")
-```
-
-```python
-from pyirix.dist.parser import parse_idb_file, DepExprParser
-
-# Parse a raw .idb file into a list of records
-records = parse_idb_file("/path/to/dist/c_dev.sw.idb")
-
-# Evaluate a dependency expression
-parser = DepExprParser("eoe.sw.base && !patch_tools")
-result = parser.evaluate(installed={"eoe.sw.base"})
-```
-
-```python
-from pyirix.dist.pkg_selector import select_packages
-
-# Select packages for installation, resolving deps
-selected = select_packages(corpus, requested=["c_dev", "c++_dev"])
-```
-
-```python
-from pyirix.dist.combine import build_combo_image
-
-# Build a combined EFS image from multiple dist directories
-build_combo_image(
-    dist_dirs=["/tmp/mipspro/dist", "/tmp/devtools/dist"],
-    output="/tmp/combo.img",
-    size_mb=2048,
-)
-```
-
-### CLI
-
-```bash
-# Catalog all subsystems in a dist directory
-python -m pyirix.dist.analyzer catalog /path/to/dist
-
-# Parse and dump an .idb file
-python -m pyirix.dist.parser /path/to/dist/eoe.sw.idb
-
-# Check for conflicts
-python -m pyirix.dist.analyzer conflicts /path/to/dist --hw IP24
-```
+| Document | What's inside |
+|----------|---------------|
+| [docs/efs.md](docs/efs.md) | EFS: read/extract, the `mkfs_efs` builder, and diagnostics/repair (checksum, replica recovery) |
+| [docs/xfs.md](docs/xfs.md) | XFS: the layered architecture, read/write/create (`mkfs_xfs`), special files (symlink/mknod), CLI, repair, and gotchas |
+| [docs/dist.md](docs/dist.md) | IRIX packaging: the spec/`.idb`/`.sw` model, dependency/conflict analysis, install simulation, family resolution, and image building |
+| [docs/debug.md](docs/debug.md) | Binary analysis: the static ELF tools (disasm, symbols, xrefs, DWARF) and the live `gdb-multiarch` kernel driver |
+| [docs/building-a-bootable-irix-root.md](docs/building-a-bootable-irix-root.md) | Worked example: assembling a from-scratch IRIX root that boots to a single-user shell, the minimal file set, and how to build/boot/validate it |
 
 ---
 
@@ -163,11 +60,42 @@ python -m pyirix.dist.analyzer conflicts /path/to/dist --hw IP24
 
 | Module | Purpose |
 |--------|---------|
-| `pyirix.efs.reader` | EFS partition finder, superblock/inode parser, recursive extractor |
-| `pyirix.efs.extract` | High-level CD set extractor; wraps reader with fallback to efsextract |
-| `pyirix.dist.analyzer` | Corpus loader, subsystem parser, conflict detector |
-| `pyirix.dist.parser` | Low-level `.idb` file parser; dependency expression evaluator |
-| `pyirix.dist.pkg_analyzer` | Package metadata analysis and version comparison |
-| `pyirix.dist.pkg_selector` | Dependency-aware package selection |
-| `pyirix.dist.combine` | Multi-source dist combiner; builds composite EFS images |
-| `pyirix.dist.patch` | Applies patches to dist directories |
+| `pyirix.efs.reader` | EFS volume-header/superblock/inode parser; recursive list, count, extract |
+| `pyirix.efs.builder` | Create EFS images from scratch (`mkfs_efs`, `EFSImageBuilder`, volume header) |
+| `pyirix.efs.repair` | EFS diagnostics (`check_efs`), checksum verify, replica-superblock recovery |
+| `pyirix.efs.extract` | Manifest-driven bulk extractor for known IRIX CD images |
+| `pyirix.xfs.image` | Disk image layer: SGI volume header, partitions, transparent raw/qcow2 |
+| `pyirix.xfs.superblock` | XFS superblock read/write, SASH-compat check, log zeroing |
+| `pyirix.xfs.inode` | Inode read/write, data fork (local/extents/btree), file data, symlinks |
+| `pyirix.xfs.directory` | V1 shortform/leaf and dir2 shortform/block directory read & mutate |
+| `pyirix.xfs.ondisk` | Parse/pack of every on-disk structure + address-conversion helpers |
+| `pyirix.xfs.btree` | Generic B+tree cursor (alloc/inobt/bmap), `CntBTreeCursor` |
+| `pyirix.xfs.alloc` / `ialloc` | Block and inode allocation/free via AGF/AGI B+trees |
+| `pyirix.xfs.operations` | High-level path ops: resolve, list, extract, create, write, delete, symlink, mknod, mkdir/rmdir, chmod/chown |
+| `pyirix.xfs.mkfs` | Create an IRIX V1-directory XFS from scratch (`mkfs_xfs`, `make_xfs_image`) |
+| `pyirix.xfs.repair` | XFS diagnostics (`check_xfs`/`repair_xfs`), version-bit fix, secondary-superblock recovery, log zeroing |
+| `pyirix.xfs.constants` | Magic numbers, format codes, `XFSError` hierarchy |
+| `pyirix.dist.analyzer` | Extracted-CD scan: subsystem catalog, text-scan deps, conflicts |
+| `pyirix.dist.parser` | Binary spec parser + `Corpus` index + conflict report (version ranges) |
+| `pyirix.dist.pkg_analyzer` | `DepExprParser`, `InstSimulator`, SQLite `PackageDatabase`, `FamilyResolver` |
+| `pyirix.dist.pkg_selector` | Curses TUI for family selection and CD-set resolution |
+| `pyirix.dist.combine` | Build a combined bootable EFS install image from dist dirs |
+| `pyirix.dist.idb` | Structured `.idb` manifest parser (`IDB`/`IDBEntry`) |
+| `pyirix.dist.archive` | Extract files from `.sw` archives (LZW/`compress` aware) |
+| `pyirix.dist.audit` | Cross-check installed files on a disk against `.idb` manifests |
+| `pyirix.dist.patch` | Fix the malformed `motif_eoe.sw64.uil` spec record |
+| `pyirix.debug.dwarf` | From-scratch SGI MIPS_DWARF2 parser (structs/funcs/vars) |
+| `pyirix.debug.disasm` | Disassemble a kernel function by name |
+| `pyirix.debug.mips_disasm` | Capstone MIPS64/BE wrapper with hardware annotations |
+| `pyirix.debug.mipsasm` | Assemble MIPS asm → big-endian words (PROM trampolines) |
+| `pyirix.debug.strings` | Resolve `lui+addiu`/`ori` string references |
+| `pyirix.debug.syscalls` | Inventory ioctl/syscall command constants |
+| `pyirix.debug.xref` | Find callers via a `jal <target>` scan |
+| `pyirix.debug.callgraph` | Whole-binary direct-call graph + path queries |
+| `pyirix.debug.dataref` | Find data-word references to an address |
+| `pyirix.debug.syms` | Generate / drift-check canonical kernel-symbol JSON |
+| `pyirix.debug.modules` | Partition DWARF-bearing ELFs into source modules |
+| `pyirix.debug.guest_gdb` | Drive `gdb-multiarch` against the live QEMU MIPS64 kernel |
+| `pyirix.prom.config` | KSEG address math, PROM header offsets, SGI platform table, platform detection |
+| `pyirix.prom.hardware_defs` | MMIO register/device definitions; address annotation for disassembly |
+| `pyirix.prom.prom_loader` | Load/normalize PROM image files; extract metadata (platform, endian, vectors) |

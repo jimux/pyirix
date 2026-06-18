@@ -109,9 +109,12 @@ def _list_installed_products(disk_path: str) -> list[str]:
     excluding only dot-prefixed metadata files like .rqsfiles, .checkpoint,
     .machine_inventory, .swmgrrc.
     """
-    from sgi_mcp.sgi_fs import (open_disk_image, find_xfs_partition,
-        xfs_read_superblock, _xfs_resolve_path, xfs_read_inode,
-        xfs_read_dir_entries, S_IFMT, S_IFDIR, S_IFREG)
+    from pyirix.xfs.image import open_disk_image, find_xfs_partition
+    from pyirix.xfs.superblock import read_superblock as xfs_read_superblock
+    from pyirix.xfs.inode import read_inode as xfs_read_inode
+    from pyirix.xfs.directory import read_dir_entries as xfs_read_dir_entries
+    from pyirix.xfs.operations import resolve_path as _xfs_resolve_path
+    from pyirix.xfs.constants import S_IFMT, S_IFDIR, S_IFREG
 
     # Per-install special-cased non-product entries that ARE files
     # but aren't packages we want to audit:
@@ -160,8 +163,10 @@ def _stat_on_disk(disk_path: str, paths: list[str]) -> dict[str, tuple[int, int]
 
     Returns {path: (size, mode)}.
     """
-    from sgi_mcp.sgi_fs import (open_disk_image, find_xfs_partition,
-        xfs_read_superblock, _xfs_resolve_path, xfs_read_inode)
+    from pyirix.xfs.image import open_disk_image, find_xfs_partition
+    from pyirix.xfs.superblock import read_superblock as xfs_read_superblock
+    from pyirix.xfs.inode import read_inode as xfs_read_inode
+    from pyirix.xfs.operations import resolve_path as _xfs_resolve_path
 
     out: dict[str, tuple[int, int]] = {}
     with open_disk_image(disk_path) as f:
@@ -194,9 +199,11 @@ def _find_idb_in_dist_image(dist_image: str, product: str) -> bytes | None:
 
     Walks every per-CD subdirectory under /.
     """
-    from sgi_mcp.sgi_fs import (open_disk_image, find_efs_partition,
-        efs_read_superblock, efs_read_inode, efs_read_dir_entries,
-        efs_read_file_data, EFS_ROOT_INODE, S_IFMT, S_IFDIR)
+    from pyirix.xfs.image import open_disk_image
+    from pyirix.efs.reader import (find_efs_partition,
+        read_superblock as efs_read_superblock, read_inode as efs_read_inode,
+        read_dir_entries as efs_read_dir_entries,
+        read_file_data as efs_read_file_data, EFS_ROOT_INODE, S_IFMT, S_IFDIR)
 
     target = f"{product}.idb"
 

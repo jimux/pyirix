@@ -81,7 +81,9 @@ def init_inode(sb, mode, uid=0, gid=0, nlink=1):
     inode = {
         'di_magic': XFS_DINODE_MAGIC,
         'di_mode': mode,
-        'di_version': 2 if sb['sb_versionnum'] >= 3 else 1,
+        # v2 inodes (32-bit nlink) are only legal when the superblock advertises
+        # XFS_SB_VERSION_NLINKBIT (0x20); otherwise use v1 (nlink in di_onlink).
+        'di_version': 2 if (sb['sb_versionnum'] & 0x20) else 1,
         'di_format': XFS_DINODE_FMT_LOCAL,
         'di_onlink': nlink if nlink <= 0xFFFF else 0,
         'di_uid': uid,

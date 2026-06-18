@@ -4,10 +4,12 @@ Read operations migrated from sgi_mcp/sgi_fs.py lines 975-1037.
 Write operations are new.
 """
 
+import struct
 import time
 
 from pyirix.xfs.constants import (
     S_IFMT, S_IFDIR, S_IFREG, S_IFLNK, S_IFCHR, S_IFBLK, S_IFIFO,
+    XFS_DINODE_FMT_DEV,
     XFS_DINODE_FMT_LOCAL, XFS_DINODE_FMT_EXTENTS, XFS_DINODE_FMT_BTREE,
     XFS_DIR_LEAF_MAGIC, XFS_DIR2_BLOCK_MAGIC,
     XFSError, XFSCorruptionError, XFSPathError,
@@ -402,6 +404,83 @@ def write_file(f, part_offset, sb, path, data):
     zero_log(f, part_offset, sb)
 
 
+def create_symlink(f, part_offset, sb, path, target, uid=0, gid=0):
+    """Create a symbolic link at `path` pointing at `target`.
+
+    Short targets are stored inline in the inode (di_format=LOCAL), exactly as
+    real IRIX symlinks (e.g. /dev/root -> /hw/disk/root). Returns the new inode.
+    """
+    if resolve_path(f, part_offset, sb, path) is not None:
+        raise XFSExistsError(f"Path already exists: {path}")
+    parent_ino, basename = resolve_parent(f, part_offset, sb, path)
+
+    tb = target.encode('latin-1') if isinstance(target, str) else bytes(target)
+    fork_off = 100  # XFS_DATA_FORK_OFFSET
+    max_inline = sb['sb_inodesize'] - fork_off
+    if len(tb) > max_inline:
+        raise XFSError(
+            f"symlink target {len(tb)}B exceeds inline capacity {max_inline}B "
+            "(extent-form symlinks not implemented)")
+
+    new_ino = alloc_inode(f, part_offset, sb)
+    inode = init_inode(sb, S_IFLNK | 0o777, uid=uid, gid=gid)
+    inode['di_format'] = XFS_DINODE_FMT_LOCAL
+    inode['di_size'] = len(tb)
+    inode['di_nextents'] = 0
+    inode['di_nblocks'] = 0
+    raw = bytearray(inode['_raw'])
+    struct.pack_into('>I', raw, 96, 0xFFFFFFFF)      # di_next_unlinked = NULLAGINO
+    raw[fork_off:fork_off + len(tb)] = tb
+    inode['_raw'] = bytes(raw)
+
+    write_inode(f, part_offset, sb, new_ino, inode)
+    _add_dir_entry(f, part_offset, sb, parent_ino, basename, new_ino)
+    write_superblock(f, part_offset, sb)
+    zero_log(f, part_offset, sb)
+    return new_ino
+
+
+def mknod(f, part_offset, sb, path, mode, rdev, uid=0, gid=0):
+    """Create a character or block device node.
+
+    `mode` must include S_IFCHR or S_IFBLK. `rdev` is the raw 32-bit device
+    word as stored on disk (e.g. read from an existing device, or a known IRIX
+    dev_t). Stored as di_format=XFS_DINODE_FMT_DEV with the dev word in the fork,
+    matching real IRIX device inodes (/dev/console, /dev/null, ...).
+    """
+    if (mode & S_IFMT) not in (S_IFCHR, S_IFBLK):
+        raise XFSError("mknod mode must be S_IFCHR or S_IFBLK")
+    if resolve_path(f, part_offset, sb, path) is not None:
+        raise XFSExistsError(f"Path already exists: {path}")
+    parent_ino, basename = resolve_parent(f, part_offset, sb, path)
+
+    new_ino = alloc_inode(f, part_offset, sb)
+    inode = init_inode(sb, mode, uid=uid, gid=gid)
+    inode['di_format'] = XFS_DINODE_FMT_DEV
+    inode['di_size'] = 0
+    inode['di_nextents'] = 0
+    inode['di_nblocks'] = 0
+    raw = bytearray(inode['_raw'])
+    struct.pack_into('>I', raw, 96, 0xFFFFFFFF)      # di_next_unlinked
+    struct.pack_into('>I', raw, 100, rdev & 0xFFFFFFFF)
+    inode['_raw'] = bytes(raw)
+
+    write_inode(f, part_offset, sb, new_ino, inode)
+    _add_dir_entry(f, part_offset, sb, parent_ino, basename, new_ino)
+    write_superblock(f, part_offset, sb)
+    zero_log(f, part_offset, sb)
+    return new_ino
+
+
+def read_dev(f, part_offset, sb, path):
+    """Return the raw 32-bit device word of a device-node inode."""
+    ino = resolve_path(f, part_offset, sb, path)
+    if ino is None:
+        raise XFSPathError(f"Not found: {path}")
+    inode = read_inode(f, part_offset, sb, ino)
+    return struct.unpack('>I', inode['_raw'][100:104])[0]
+
+
 def delete_file(f, part_offset, sb, path):
     """Delete a regular file.
 
@@ -460,6 +539,9 @@ def mkdir(f, part_offset, sb, path, mode=0o40755, uid=0, gid=0):
     parent_inode = read_inode(f, part_offset, sb, parent_ino)
     if parent_inode:
         parent_inode['di_nlink'] += 1
+        # Keep the v1 link-count field (di_onlink) in sync — a V1 inode reader
+        # (IRIX) reads di_onlink, not di_nlink.
+        parent_inode['di_onlink'] = min(parent_inode['di_nlink'], 0xFFFF)
         write_inode(f, part_offset, sb, parent_ino, parent_inode)
 
     write_superblock(f, part_offset, sb)
@@ -494,6 +576,7 @@ def rmdir(f, part_offset, sb, path):
     parent_inode = read_inode(f, part_offset, sb, parent_ino)
     if parent_inode and parent_inode['di_nlink'] > 1:
         parent_inode['di_nlink'] -= 1
+        parent_inode['di_onlink'] = min(parent_inode['di_nlink'], 0xFFFF)
         write_inode(f, part_offset, sb, parent_ino, parent_inode)
 
     # Free the inode

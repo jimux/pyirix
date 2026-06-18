@@ -13,9 +13,9 @@ try:
 except ImportError:
     CAPSTONE_AVAILABLE = False
 
-from .config import PROM_BASE, prom_offset_to_addr, addr_to_prom_offset
-from .hardware_defs import annotate_address, format_annotation, get_lui_annotation
-from .prom_loader import load_prom, get_prom_metadata, normalize_data
+from pyirix.prom.config import PROM_BASE, prom_offset_to_addr, addr_to_prom_offset
+from pyirix.prom.hardware_defs import annotate_address, format_annotation, get_lui_annotation
+from pyirix.prom.prom_loader import load_prom, get_prom_metadata, normalize_data
 
 
 @dataclass
@@ -276,7 +276,7 @@ def disassemble_prom(
     # Get platform-appropriate mode
     mode = "mips3"  # Default
     if meta.platform:
-        from .config import get_cpu_mode
+        from pyirix.prom.config import get_cpu_mode
         mode = get_cpu_mode(meta.platform)
 
     disasm = MipsDisassembler(mode)
