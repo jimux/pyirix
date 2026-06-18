@@ -3,6 +3,9 @@ __pycache__/
 *.pyo
 .DS_Store
 *.egg-info/
-dist/
+# NOTE: NOT ignoring `dist/` — collides with pyirix.dist (IRIX-dist
+# analysis source module). If we later need to ignore Python packaging
+# output, use /dist/ (top-level only) or move sdist/wheel output into
+# ./build/.
 build/
 .venv/

@@ -34,9 +34,12 @@ from pyirix.xfs.ialloc import alloc_inode, free_inode
 # ── Path Resolution ─────────────────────────────────────────────────
 
 def resolve_path(f, part_offset, sb, path):
-    """Resolve a path to an XFS inode number.
+    """Resolve a path to an XFS inode number, NOT following symlinks
+    in path components.
 
-    Returns inode number or None.
+    Returns inode number or None. Use resolve_path_follow_links() if
+    you want symlink-following behavior (typical for "does this file
+    exist on the system" checks).
     """
     parts = [p for p in path.strip('/').split('/') if p]
     root_ino = sb['sb_rootino']
@@ -57,6 +60,114 @@ def resolve_path(f, part_offset, sb, path):
                 break
         if not found:
             return None
+    return current_ino
+
+
+def resolve_path_follow_links(f, part_offset, sb, path,
+                              max_resolutions: int = 32):
+    """Resolve a path, following symlinks at every level.
+
+    IRIX makes heavy use of symlinks for path canonicalization (e.g.
+    `/bin → usr/bin`, `/lib → usr/lib`). A path like `/bin/sh` won't
+    resolve via `resolve_path` because `/bin` is a symlink, not a dir —
+    but on the live system the lookup follows the link and finds the
+    file. This function does the same, walking the link chain
+    component-by-component.
+
+    Returns the FINAL inode number (the target's inode) or None. Loops
+    cap at `max_resolutions` total link traversals to defend against
+    cycles.
+    """
+    root_ino = sb['sb_rootino']
+    parts = [p for p in path.strip('/').split('/') if p]
+    if not parts:
+        return root_ino
+
+    visited = 0
+    current_ino = root_ino
+    i = 0
+    while i < len(parts):
+        part = parts[i]
+        inode = read_inode(f, part_offset, sb, current_ino)
+        if not inode:
+            return None
+        ftype = inode['di_mode'] & S_IFMT
+        # If the current node is a symlink, resolve IT first before
+        # descending. This handles cases where an intermediate dir is
+        # actually a symlink (e.g. `/bin/<foo>` with `/bin → usr/bin`).
+        if ftype == S_IFLNK:
+            visited += 1
+            if visited > max_resolutions:
+                return None
+            target = read_symlink(f, part_offset, sb, inode)
+            if isinstance(target, bytes):
+                target = target.decode('latin-1', errors='replace')
+            if not target:
+                return None
+            # Absolute target → reset to root; relative → splice in at
+            # current position. Either way the remaining path parts
+            # after `parts[i:]` (including `part` itself) are unchanged.
+            new_parts = [p for p in target.split('/') if p]
+            if target.startswith('/'):
+                current_ino = root_ino
+                parts = new_parts + parts[i:]
+                i = 0
+            else:
+                # Relative symlink: target replaces the link's name in
+                # the path. Walk into the parent (we just came down INTO
+                # the link from its parent), so reset current_ino to the
+                # parent of the link.
+                # But: we don't easily know the parent inode here. Use
+                # path-rewriting: replace parts[i-1..] with target +
+                # parts[i:]. (parts[i-1] was the link's name; its parent
+                # was reached by the previous component, which is what
+                # current_ino's "previous state" was.)
+                # Simpler: rebuild from root with the rewritten path.
+                rebuilt = parts[:i] + new_parts + parts[i+1:]
+                # Need to find the parent of the link to anchor the new
+                # path. Easiest: restart from root.
+                current_ino = root_ino
+                parts = rebuilt
+                i = 0
+            continue
+
+        # Not a symlink — must be a dir to descend into it.
+        if ftype != S_IFDIR:
+            return None
+
+        entries = read_dir_entries(f, part_offset, sb, inode)
+        found = False
+        for name, child_ino in entries:
+            if name == part:
+                current_ino = child_ino
+                found = True
+                break
+        if not found:
+            return None
+        i += 1
+
+    # Final component might itself be a symlink — resolve once more.
+    inode = read_inode(f, part_offset, sb, current_ino)
+    if inode and (inode['di_mode'] & S_IFMT) == S_IFLNK and visited < max_resolutions:
+        visited += 1
+        target = read_symlink(f, part_offset, sb, inode)
+        if isinstance(target, bytes):
+            target = target.decode('latin-1', errors='replace')
+        if target:
+            # Resolve target from root (absolute) or from the link's
+            # parent (relative). Since we don't track the parent here,
+            # we resolve absolutes immediately and recursively re-call
+            # for relatives using the original path's parent.
+            if target.startswith('/'):
+                return resolve_path_follow_links(
+                    f, part_offset, sb, target,
+                    max_resolutions=max_resolutions - visited)
+            # Relative final-component symlink: anchor at the link's
+            # parent directory.
+            parent_path = '/' + '/'.join(parts[:-1])
+            return resolve_path_follow_links(
+                f, part_offset, sb, parent_path + '/' + target,
+                max_resolutions=max_resolutions - visited)
     return current_ino
 
 
