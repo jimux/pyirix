@@ -119,6 +119,80 @@ def extract_to_dir(sw_path: str | Path, idb: IDB, output_dir: str | Path,
     return written
 
 
+def build_tar(sw_path: str | Path, idb: IDB, out_path: str | Path,
+              subsystems=None, gzip: bool = True) -> dict:
+    """Build a tar mirroring install media: decompress each .sw file entry and
+    emit it at its ``install_path`` with the IDB's **mode, owner/group, and
+    symlinks** preserved, synthesizing parent directories explicitly so a live
+    ``untar`` on an IRIX guest reproduces permissions exactly.
+
+    ``subsystems`` (a set/list of subsystem names) restricts what is shipped;
+    ``None`` ships every entry. Returns ``{files, links, dirs, bytes}``.
+
+    Why explicit dir entries + owner/group: an IRIX install is owned root:sys
+    with specific modes; a plain ``tar`` of just the files would let the guest's
+    umask and missing intermediate dirs corrupt the permission set. This carries
+    every directory (0755 root:sys) and each file's exact ``mode & 07777``, which
+    is what makes the live-untar desktop graft boot-faithful. Extracted from the
+    one-off ``build_desktop_eoe_tar.py``.
+    """
+    import io
+    import tarfile
+
+    keep = set(subsystems) if subsystems is not None else None
+    with open(sw_path, "rb") as f:
+        sw_bytes = f.read()
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    n_files = n_links = 0
+    seen_dirs: set[str] = set()
+    mode = "w:gz" if gzip else "w"
+
+    with tarfile.open(out_path, mode, format=tarfile.GNU_FORMAT) as tf:
+        def ensure_dirs(install_path: str):
+            cur = ""
+            for p in install_path.lstrip("/").split("/")[:-1]:
+                cur = cur + "/" + p if cur else p
+                if cur in seen_dirs:
+                    continue
+                seen_dirs.add(cur)
+                ti = tarfile.TarInfo(name=cur)
+                ti.type = tarfile.DIRTYPE
+                ti.mode, ti.uid, ti.gid = 0o755, 0, 0
+                ti.uname, ti.gname = "root", "sys"
+                tf.addfile(ti)
+
+        for e in idb.entries:
+            if keep is not None and e.subsystem not in keep:
+                continue
+            rel = e.install_path.lstrip("/")
+            if e.type == "f":
+                data = extract_one(sw_bytes, e)
+                ensure_dirs(e.install_path)
+                ti = tarfile.TarInfo(name=rel)
+                ti.size = len(data)
+                ti.mode = e.mode & 0o7777
+                ti.uid, ti.gid = 0, 0
+                ti.uname = e.owner or "root"
+                ti.gname = e.group or "sys"
+                ti.type = tarfile.REGTYPE
+                tf.addfile(ti, io.BytesIO(data))
+                n_files += 1
+            elif e.type == "l" and e.target:
+                ensure_dirs(e.install_path)
+                ti = tarfile.TarInfo(name=rel)
+                ti.type = tarfile.SYMTYPE
+                ti.linkname = e.target
+                ti.mode, ti.uid, ti.gid = 0o777, 0, 0
+                ti.uname, ti.gname = "root", "sys"
+                tf.addfile(ti)
+                n_links += 1
+
+    return {"files": n_files, "links": n_links, "dirs": len(seen_dirs),
+            "bytes": out_path.stat().st_size}
+
+
 # ── CLI ────────────────────────────────────────────────────────────────
 
 

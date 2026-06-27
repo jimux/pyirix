@@ -332,9 +332,25 @@ def cmd_check(args):
             else:
                 results.append(('INFO', f'{probe_path}: not found'))
 
+        if getattr(args, 'inodes', False):
+            from .check import scan_inode_magic
+            res = scan_inode_magic(f, part_offset, sb)
+            nbad = len(res['bad_alloc']) + len(res['bad_free'])
+            if nbad == 0:
+                results.append(('PASS', "inode magic: all %d allocated + %d free "
+                                "slots OK ('IN') across %d chunks"
+                                % (res['allocated'], res['free'], res['chunks'])))
+            else:
+                results.append(('FAIL', 'inode magic: %d allocated + %d free slots '
+                                'with bad magic (corruption)'
+                                % (len(res['bad_alloc']), len(res['bad_free']))))
+                for ino, pos, magic, blk in (res['bad_alloc'] + res['bad_free'])[:8]:
+                    results.append(('FAIL', '  ino %d @0x%x (block %d): magic 0x%04x'
+                                    % (ino, pos, blk, magic)))
+
         _print_results(results)
 
-    return 0
+    return 1 if any(s == 'FAIL' for s, _ in results) else 0
 
 
 def _print_results(results):
@@ -445,6 +461,11 @@ def main():
     # check
     p_check = subparsers.add_parser('check', help='Filesystem check')
     p_check.add_argument('image', help='Disk image path')
+    p_check.add_argument('--inodes', action='store_true',
+                         help='Full inode-buffer magic scan: verify every '
+                              'inode slot (allocated AND free) carries '
+                              "'IN' magic — catches the block-level corruption "
+                              'IRIX reports as "Bad magic # in XFS inode buffer"')
 
     # mkfs
     p_mkfs = subparsers.add_parser('mkfs', help='Create an IRIX V1 XFS image')
