@@ -237,15 +237,24 @@ def read_file_data(f, part_offset, sb, inode):
         return b''
 
     blocksize = sb['sb_blocksize']
-    result = bytearray()
-
-    extents.sort(key=lambda e: e[0])
+    # Place each extent at its LOGICAL offset (startoff * blocksize), zero-filling
+    # any holes. A sparse file (di_nblocks < ceil(di_size/blocksize)) has a gap
+    # between extents; concatenating extents contiguously — ignoring startoff —
+    # shifts all post-hole data backward and truncates the tail, silently
+    # corrupting the file (e.g. libm.so dropped its section-header tail). Build a
+    # size-sized zero buffer and drop each extent at its true position.
+    result = bytearray(size)
     for startoff, startblock, blockcount in extents:
         disk_off = fsblock_to_offset(sb, part_offset, startblock)
         f.seek(disk_off)
-        result.extend(f.read(blockcount * blocksize))
+        data = f.read(blockcount * blocksize)
+        pos = startoff * blocksize
+        if pos >= size:
+            continue
+        end = min(pos + len(data), size)
+        result[pos:end] = data[:end - pos]
 
-    return bytes(result[:size])
+    return bytes(result)
 
 
 def write_file_data(f, part_offset, sb, inode, ino, data, alloc_fn):
