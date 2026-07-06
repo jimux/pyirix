@@ -20,10 +20,11 @@ API:
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
-from pyirix.dist.idb import IDB, IDBEntry
+from pyirix.dist.idb import IDB, IDBEntry, parse_idb
 
 
 # Each file record starts with a 2-byte big-endian path length prefix,
@@ -117,6 +118,122 @@ def extract_to_dir(sw_path: str | Path, idb: IDB, output_dir: str | Path,
             g.write(content)
         written += 1
     return written
+
+
+def archive_of_entry(entry: IDBEntry) -> str:
+    """Return the archive file an IDB entry lives in (e.g. 'demos_O2.swII').
+
+    A subsystem name is `<product>.<archive_ext>.<tag>` (e.g.
+    `demos_O2.swII.Birth_of_O2`), so the archive file is everything before the
+    final `.tag`. Files of one product are split across `.sw`, `.swII`, `.man`,
+    etc.; each entry's byte offset is relative to ITS archive, so extracting all
+    entries from a single `.sw` corrupts the ones that live in `.swII`.
+    """
+    ss = entry.subsystem or ""
+    return ss.rsplit(".", 1)[0] if "." in ss else ss
+
+
+def _reconstruct_offsets(sw_bytes: bytes, entries: list, default_header: int = 13):
+    """Set entry.offset for archives whose idb omitted `off(...)`.
+
+    Record layout: [u16-BE pathlen][path][payload], payload = cmpsize bytes when
+    compressed else size bytes; the archive starts with a short `im001Vxxx Pxx`
+    header. Directory/symlink entries carry no archive bytes. We auto-detect the
+    header length by locating the first entry's stored path, then walk cumulatively.
+    """
+    if not entries:
+        return
+    first = entries[0].install_path.lstrip("/").encode("latin-1", "replace")
+    idx = sw_bytes.find(first, 0, 1024)
+    off = (idx - 2) if idx >= 2 else default_header
+    for e in entries:
+        e.offset = off
+        pathlen = len(e.install_path.lstrip("/"))
+        payload = e.cmpsize if e.cmpsize > 0 else e.size
+        off += 2 + pathlen + payload
+
+
+def extract_product(install_dir: str | Path, product: str, output_dir: str | Path,
+                    include_man: bool = False) -> dict:
+    """Reconstruct a full installed tree for one inst product, spanning ALL its
+    archive files (`<product>.sw`, `.swII`, ...).
+
+    `install_dir` holds `<product>.idb` plus the `<product>.sw*` archives (the
+    layout inside an SGI inst CD's `install/` or `dist/` directory). Files,
+    symlinks and directories are materialized under `output_dir` at their
+    install_path. Returns `{files, links, dirs, archives, missing_archives}`.
+
+    This is the correct multi-archive counterpart to `extract_to_dir`, which only
+    reads a single `.sw`.
+    """
+    from collections import defaultdict
+
+    install_dir = Path(install_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    idb = parse_idb(str(install_dir / f"{product}.idb"))
+
+    # group file entries by their owning archive
+    by_archive: dict[str, list] = defaultdict(list)
+    links = dirs = 0
+    for e in idb.entries:
+        if e.is_dir:
+            d = output_dir / e.install_path.lstrip("/")
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+                dirs += 1
+            except (FileExistsError, NotADirectoryError, PermissionError):
+                # path already materialized as a symlink/file by an earlier entry
+                # (e.g. IRIX EOE ships /usr/adm both ways) — leave it as-is
+                pass
+        elif e.is_symlink:
+            dst = output_dir / e.install_path.lstrip("/")
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if dst.is_symlink() or dst.exists():
+                    dst.unlink()
+                os.symlink(e.target or "", dst)
+                links += 1
+            except OSError:
+                pass
+        elif e.is_file:
+            by_archive[archive_of_entry(e)].append(e)
+
+    files = 0
+    archives_used = []
+    missing = []
+    for archive, entries in by_archive.items():
+        if archive.endswith(".man") and not include_man:
+            continue
+        ap = install_dir / archive
+        if not ap.exists():
+            missing.append(archive)
+            continue
+        sw_bytes = ap.read_bytes()
+        archives_used.append(archive)
+        # Some inst products (notably the high-end Onyx/InfiniteReality demo
+        # discs, archive ext .demo/.other/.portalis) ship idbs WITHOUT an
+        # `off(...)` token, so every entry.offset is 0. Reconstruct the per-archive
+        # cumulative byte offsets from the record layout in that case.
+        if entries and all(e.offset == 0 for e in entries):
+            _reconstruct_offsets(sw_bytes, entries)
+        for e in entries:
+            content = extract_one(sw_bytes, e)
+            rel = e.install_path.lstrip("/")
+            dst = output_dir / rel
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                with open(dst, "wb") as g:
+                    g.write(content)
+                files += 1
+            except (FileExistsError, NotADirectoryError, IsADirectoryError, OSError):
+                # a parent path collides with an earlier symlink/file entry; skip
+                continue
+    return {
+        "files": files, "links": links, "dirs": dirs,
+        "archives": sorted(archives_used), "missing_archives": sorted(missing),
+        "product": product,
+    }
 
 
 def build_tar(sw_path: str | Path, idb: IDB, out_path: str | Path,
