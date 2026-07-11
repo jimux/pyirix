@@ -14,7 +14,8 @@ Every static module is runnable as a script: `python3 -m pyirix.debug.<module>`.
 
 | Module | What it does | How |
 |--------|--------------|-----|
-| `dwarf` | DWARF2 type recovery | From-scratch parser for SGI MIPS_DWARF2 (`.debug_abbrev`/`.debug_info`); recovers structs, unions, functions, globals |
+| `dwarf` | DWARF2 type recovery | From-scratch parser for SGI MIPS_DWARF2 (`.debug_abbrev`/`.debug_info`); recovers structs, unions, functions, globals — with addresses, linkage names, and CU offsets |
+| `dwarf_bias` | Per-CU address-bias recovery | Maps un-relocated DWARF `low_pc` values onto real binary addresses via exported-symbol anchors; classifies CUs zero-bias / biased / multi-section |
 | `disasm` | Disassemble one function by name | Looks up symbol → file offset, runs the capstone wrapper, resolves `jal`/`j` targets to symbols |
 | `mips_disasm` | Capstone MIPS64/BE engine | Annotates `lui+addiu`/`ori` address reconstruction with hardware register names; finds function prologues |
 | `mipsasm` | Assemble MIPS → BE words | Wraps `mips-elf-as`/`objcopy`; emits hex, C arrays, or pointer-assignment trampolines |
@@ -34,8 +35,10 @@ from pyirix.debug.dwarf import DwarfParser
 dw = DwarfParser("/path/to/binary_with_dwarf")
 for s in dw.structs():
     layout = dw.struct_layout(s)              # {name, kind, size, members:[{name, offset, type}]}
-for fn in dw.funcs():                          # [{name, ret, params:[{name,type}]}]
-    print(fn["name"], fn["ret"])
+for fn in dw.funcs():                          # [{name, ret, params, low_pc, linkage, cu}]
+    print(fn["name"], hex(fn["low_pc"] or 0))
+for v in dw.variables():                       # [{name, type, addr, linkage, cu}]
+    print(v["name"], hex(v["addr"] or 0))
 ```
 
 ```bash
@@ -43,10 +46,41 @@ python3 -m pyirix.debug.dwarf <elf> struct <name>     # print one struct layout
 python3 -m pyirix.debug.dwarf <elf> structs [substr]  # list structs
 python3 -m pyirix.debug.dwarf <elf> func <name>       # C prototype
 python3 -m pyirix.debug.dwarf <elf> vars [substr]     # globals by address
-python3 -m pyirix.debug.dwarf <elf> json out.json     # dump structs + funcs
+python3 -m pyirix.debug.dwarf <elf> json out.json     # dump structs + funcs + vars
 ```
 
 The SGI quirk this works around: SGI abbrev tables are **not** null-terminated and codes reset per compilation unit, so the parser stops when a code is `0` or `<=` the previous code rather than relying on a terminator.
+
+**Per-function fields (2026-07 extractor fix — regenerate old dumps).** `funcs()` emits `low_pc` (`DW_AT_low_pc`, or `None`), `linkage` (`DW_AT_MIPS_linkage_name`, the mangled C++ name — often present when `name` is the demangled or source name), and `cu` (the containing compilation unit's `.debug_info` offset, which is the grouping key for bias recovery below). `variables()` likewise carries `linkage` and `cu` alongside the `DW_OP_addr`-derived `addr`, and `json` mode includes the `vars` list. **Any `dwarf.json` produced before 2026-07-10 silently lacks all of these** — the extractor dropped them on the floor, which mislabeled whole binaries as "address-less DWARF, honest floor" for the RE-corpus naming campaigns. If a cached dump has no `low_pc` keys, re-parse the binary rather than trusting it.
+
+### Per-CU address bias recovery (`dwarf_bias`)
+
+**What it's for.** On SGI MIPS_DWARF2 shared libraries, `DW_AT_low_pc` values are frequently **un-relocated**: each CU's addresses are biased by some per-CU (sometimes per-*section*) constant relative to where the code actually landed in the linked binary. Matching DIEs to binary addresses with a naive zero bias then mis-names *every* function in a way that still passes structural gates — same count, same order, wrong names. `dwarf_bias` recovers the bias per CU and lands DIE names on real addresses, which is what turned the corpus's "unusable internal DWARF" into ~1,000+ recovered static-function names (campaign 4).
+
+```python
+from pyirix.debug.dwarf_bias import recover, classify_cu
+
+# func_exports: {exported_name: binary_addr}  (from symbols.json / readelf dynsym)
+# target_addrs: set of addresses you want names for (e.g. residue FUN_ addresses)
+hits, cu_bias, stats = recover(binpath, func_exports, target_addrs)
+# hits: [{name, die_low_pc, real_addr, cu, bias, ...}] — DIE names landed on real addresses
+# cu_bias: {cu_offset: [candidate biases]};  classify_cu(cu_bias[cu]) → regime
+```
+
+**How it works.** For each CU it computes candidate biases as `dynsym_addr − DIE_low_pc` over **anchor** DIEs — functions whose (linkage-preferred) name is globally unique among the binary's exports, so the pairing is unambiguous. A CU whose anchors agree on one bias gets that bias applied to all its DIEs; the un-anchored DIEs then "land" on binary addresses.
+
+**The three regimes (`classify_cu`), and how much to trust each:**
+- **zero-bias** — anchors agree on bias 0; DIE addresses are identity-correct. Landings are trustworthy as-is (data symbols independently verifying bias 0 is the usual confirmation).
+- **biased** — anchors agree on one nonzero bias. Same trust level as zero-bias once the bias is applied.
+- **multi-section** — anchors disagree (the CU's text was split across sections at link time). Use the **dominant** bias (the one most anchors vote for) and treat every landing as a *candidate requiring a semantic spot-check* (does the body/wiring match the name?) before shipping. Do **not** pool multiple candidate biases per DIE — that manufactures collisions.
+- **no-anchor** — a CU with no globally-unique exported function cannot be biased; its DIEs stay unusable. Common in comdat-heavy C++.
+
+**Quirks worth knowing.**
+- **Name collapse is the real yield limiter, not recovery.** Comdat template instantiation puts one DWARF name on N addresses; libil recovers 2,914 DIE hits that collapse to ~0 unique-nameable names. Always dedupe by name and discard non-unique landings before counting a "yield".
+- Anchoring prefers `DW_AT_MIPS_linkage_name` over `name` — the mangled form is what actually matches dynsym on C++ libraries.
+- The bias is per-**CU**, keyed on the `cu` field the `dwarf` parser stamps on each DIE; mixing DIEs across CUs under one bias is invalid.
+- Data symbols (from `variables()`) are relocated normally (bias 0) even when function DIEs are biased — useful as an independent sanity check, useless as function anchors.
+- Downstream consumers: `progress_notes/binary_re/pipeline/resweep_flag.py` ranks corpus trees by net-new nameable functions on top of `recover()`. Tests: `sgi-irix-re/tests/test_dwarf_bias.py` (libil fixture: 218/218 anchors zero-bias, 3,318 pool functions land by identity).
 
 ### Disassembly and assembly
 
