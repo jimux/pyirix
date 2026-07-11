@@ -23,7 +23,7 @@ DW_TAG = {0x11:"compile_unit",0x2e:"subprogram",0x05:"formal_parameter",
 # attrs we care about
 AT_name=0x03; AT_byte_size=0x0b; AT_type=0x49; AT_member_loc=0x38
 AT_encoding=0x3e; AT_const_value=0x1c; AT_upper_bound=0x2f; AT_prototyped=0x27
-AT_external=0x3f; AT_low_pc=0x11
+AT_external=0x3f; AT_low_pc=0x11; AT_MIPS_linkage_name=0x2007
 
 
 def uleb(b, p):
@@ -187,7 +187,8 @@ class DwarfParser:
                     continue
                 tag, hc, attrs = tbl[code]
                 die = {"off": die_off, "tag": tag, "tag_name": DW_TAG.get(tag, "t%#x" % tag),
-                       "attrs": {}, "children": [], "parent": stack[-1] if stack else None}
+                       "attrs": {}, "children": [], "parent": stack[-1] if stack else None,
+                       "cu": cu_start}
                 for at, fm in attrs:
                     val, p = self._read_form(fm, p, cu_start, addr_size)
                     die["attrs"][at] = val
@@ -277,7 +278,9 @@ class DwarfParser:
             if isinstance(loc, bytes) and loc and loc[0] == 0x03:   # DW_OP_addr
                 addr = struct.unpack(self.e + "I", loc[1:5])[0]
             out.append({"name": die["attrs"][AT_name], "addr": addr,
-                        "type": self.type_name(die["attrs"].get(AT_type))})
+                        "type": self.type_name(die["attrs"].get(AT_type)),
+                        "linkage": die["attrs"].get(AT_MIPS_linkage_name),
+                        "cu": die.get("cu")})
         return out
 
     def funcs(self):
@@ -294,7 +297,16 @@ class DwarfParser:
                         params.append({"name": "...", "type": ""})
                 out.append({"name": die["attrs"][AT_name],
                             "ret": self.type_name(die["attrs"].get(AT_type)),
-                            "params": params})
+                            "params": params,
+                            # ADDRESS + linkage recovery (campaign 4 A1): the old extractor
+                            # dropped these, which produced years of wrong "address-less
+                            # DWARF, honest floor" verdicts. low_pc may be un-relocated
+                            # (per-CU biased) -- callers recover the CU bias from exported
+                            # anchors (see pyirix.debug.dwarf_bias). `cu` groups DIEs per CU
+                            # for that recovery; `linkage` is the mangled name (C++ class).
+                            "low_pc": die["attrs"].get(AT_low_pc),
+                            "linkage": die["attrs"].get(AT_MIPS_linkage_name),
+                            "cu": die.get("cu")})
         return out
 
 
@@ -348,8 +360,9 @@ def main():
             n = d["attrs"].get(AT_name)
             if n:
                 structs[n] = dp.struct_layout(d)
-        json.dump({"structs": structs, "funcs": dp.funcs()}, open(out, "w"))
-        print("wrote %d structs, %d funcs -> %s" % (len(structs), len(dp.funcs()), out))
+        funcs = dp.funcs(); dvars = dp.variables()
+        json.dump({"structs": structs, "funcs": funcs, "vars": dvars}, open(out, "w"))
+        print("wrote %d structs, %d funcs, %d vars -> %s" % (len(structs), len(funcs), len(dvars), out))
 
 
 if __name__ == "__main__":
