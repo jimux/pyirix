@@ -5,7 +5,17 @@ Resolution order (first hit wins):
   1. explicit ``--dest DIR`` (handled by the caller, not here)
   2. ``$INDIGO_DATA_ROOT``
   3. ``data_root`` key in ``~/.config/indigo/config``
-  4. default ``~/.local/share/indigo``
+  4. an existing per-user root ``~/.local/share/indigo`` (a fresh import)
+  5. an existing system root ``/usr/share/indigo`` (an installed
+     ``irix-assets`` package — found with zero configuration)
+  6. otherwise the default per-user root ``~/.local/share/indigo``
+     (the location a fresh import will create)
+
+Steps 4–6 make the port and the importer agree with the packaged install
+layout: the ``irix-assets`` package (``pyirix.indigo make-package``) installs
+under ``/usr/share/indigo``, and a user import stays at ``~/.local/share/indigo``
+and takes precedence when both are present. Import into an empty machine still
+lands at the per-user default (step 6).
 
 The config file is a trivial ``key = value`` / ``key: value`` text file
 (blank lines and ``#`` comments ignored) so it stays dependency-free and
@@ -19,6 +29,7 @@ from pathlib import Path
 
 
 DEFAULT_DATA_ROOT = "~/.local/share/indigo"
+SYSTEM_DATA_ROOT = "/usr/share/indigo"
 CONFIG_PATH = "~/.config/indigo/config"
 
 
@@ -50,4 +61,13 @@ def resolve_data_root(dest: str | None = None) -> str:
     cfg = _read_config().get("data_root")
     if cfg:
         return os.path.abspath(os.path.expanduser(cfg))
-    return os.path.abspath(os.path.expanduser(DEFAULT_DATA_ROOT))
+    # Zero-config discovery: prefer an existing populated root — the per-user
+    # import over an installed system package — else fall back to the per-user
+    # default (which a fresh import will create).
+    user_default = os.path.abspath(os.path.expanduser(DEFAULT_DATA_ROOT))
+    if os.path.isdir(user_default):
+        return user_default
+    system = os.path.abspath(os.path.expanduser(SYSTEM_DATA_ROOT))
+    if os.path.isdir(system):
+        return system
+    return user_default

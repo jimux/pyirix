@@ -3,11 +3,16 @@
 
     python3 -m pyirix.indigo import <source>... [--dest DIR]
     python3 -m pyirix.indigo verify [--dest DIR]
+    python3 -m pyirix.indigo make-package [--dest DIR] [--outdir DIR]
+                                          [--version V] [--only FMT[,FMT]]
 
 `import` accepts any mix of the supported source formats (dist tree, EFS/ISO
 CD image, .tardist, IRIX disk image, plain root tree); later sources add to /
 overwrite earlier ones in the same data root. `verify` checks presence, min
-counts and format sanity of an already-populated data root.
+counts and format sanity of an already-populated data root. `make-package`
+builds the private, arch-independent `irix-assets` rpm/deb/tgz from a
+populated data root so a reinstall is one package install (NON-REDISTRIBUTABLE:
+copyrighted SGI content; for the user's own private repo).
 
 Data root resolution: ``--dest`` > ``$INDIGO_DATA_ROOT`` >
 ``~/.config/indigo/config`` (``data_root``) > ``~/.local/share/indigo``.
@@ -16,6 +21,7 @@ Data root resolution: ``--dest`` > ``$INDIGO_DATA_ROOT`` >
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from pyirix.indigo.config import resolve_data_root
@@ -52,6 +58,27 @@ def _cmd_verify(args) -> int:
     return 0 if rep.ok else 1
 
 
+def _cmd_make_package(args) -> int:
+    from pyirix.indigo.mkpkg import make_package
+    formats = (tuple(f.strip() for f in args.only.split(",") if f.strip())
+               if args.only else ("deb", "rpm", "tgz"))
+    res = make_package(dest=args.dest, outdir=args.outdir,
+                       version=args.version, formats=formats)
+    print(f"data root:  {res.data_root}")
+    print(f"version:    {res.version}")
+    if res.media:
+        print(f"media:      {', '.join(res.media)}")
+    print(f"staged:     {res.stage.files} files, {res.stage.symlinks} symlinks, "
+          f"{res.stage.dirs} dirs  (receipt included: {res.receipt_included})")
+    print(f"outdir:     {res.outdir}")
+    for fmt in ("deb", "rpm", "tgz"):
+        p = res.artifacts.get(fmt)
+        if p:
+            sz = os.path.getsize(p)
+            print(f"  {fmt:<3} {os.path.basename(p)}  ({sz} bytes)")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="pyirix.indigo",
                                  description="Indigo Magic asset importer "
@@ -70,6 +97,19 @@ def main(argv=None) -> int:
     ver = sub.add_parser("verify", help="verify a populated data root")
     ver.add_argument("--dest", default=None, help="data root (override)")
     ver.set_defaults(func=_cmd_verify)
+
+    mk = sub.add_parser("make-package",
+                        help="build the private irix-assets rpm/deb/tgz "
+                             "from a populated data root")
+    mk.add_argument("--dest", default=None, help="data root (override)")
+    mk.add_argument("--outdir", default=None,
+                    help="artifact output dir (default ./dist-irix-assets)")
+    mk.add_argument("--version", default=None,
+                    help="package version (default: from receipt date)")
+    mk.add_argument("--only", default=None,
+                    help="comma-separated subset of deb,rpm,tgz "
+                         "(default: all three)")
+    mk.set_defaults(func=_cmd_make_package)
 
     args = ap.parse_args(argv)
     return args.func(args)
