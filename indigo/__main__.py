@@ -79,6 +79,25 @@ def _cmd_make_package(args) -> int:
     return 0
 
 
+def _cmd_appsync(args) -> int:
+    from pyirix.indigo.appsync import run_appsync
+    dirs = args.appdir or None
+    res = run_appsync(dest=args.dest, dirs=dirs, force=args.force)
+    print(f"data root:   {res.data_root}")
+    print(f"apps:        {len(res.apps)}  (changed={res.changed})")
+    print(f"hostapps.ftr: {res.ftr_path}")
+    print(f"launchers:   {res.launch_dir}")
+    print("  genres: " + ", ".join(f"{k}={v}" for k, v in
+                                    sorted(res.genre_counts.items())))
+    print("  pages:")
+    for page, names in sorted(res.pages.items()):
+        print(f"      {page:<14} {len(names):>4}")
+    if args.watch:
+        print("  --watch: NOT IMPLEMENTED (TODO: inotify refresh arrives "
+              "with the fm port; run appsync at session start for now)")
+    return 0
+
+
 def _cmd_fti_check(args) -> int:
     from pyirix.indigo import fti
     paths = fti.find_corpus_fti(args.root)
@@ -157,6 +176,18 @@ def main(argv=None) -> int:
                     help="comma-separated subset of deb,rpm,tgz "
                          "(default: all three)")
     mk.set_defaults(func=_cmd_make_package)
+
+    ap_sync = sub.add_parser(
+        "appsync",
+        help="generate Icon Catalog entries from host .desktop applications")
+    ap_sync.add_argument("--dest", default=None, help="data root (override)")
+    ap_sync.add_argument("--appdir", action="append", default=None,
+                         help="override .desktop scan dir(s) (repeatable)")
+    ap_sync.add_argument("--force", action="store_true",
+                         help="force regenerate even if content is unchanged")
+    ap_sync.add_argument("--watch", action="store_true",
+                         help="(stub) live-refresh; arrives with the fm port")
+    ap_sync.set_defaults(func=_cmd_appsync)
 
     fc = sub.add_parser("fti-check",
                         help="parse-coverage check over corpus .fti trees")
