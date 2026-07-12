@@ -1,0 +1,101 @@
+#	Genre icon: Settings (gear)
+#	ORIGINAL work of the Indigo-Magic-on-Linux project
+#	(indigo-appsync genre set) -- our copyright, freely
+#	redistributable. No SGI icon geometry is copied or traced;
+#	only the SGI .fti icon *language* (shadow+iconcolor+outline)
+#	is shared.  Canvas 0..100, y-up.
+
+#	shadow
+		color(shadowcolor);
+		bgnpolygon();
+			vertex(90.45, 36.63);
+			vertex(90.45, 54.37);
+			vertex(81.16, 49.88);
+			vertex(76.15, 61.96);
+			vertex(85.90, 65.35);
+			vertex(73.35, 77.90);
+			vertex(69.96, 68.15);
+			vertex(57.88, 73.16);
+			vertex(62.37, 82.45);
+			vertex(44.63, 82.45);
+			vertex(49.12, 73.16);
+			vertex(37.04, 68.15);
+			vertex(33.65, 77.90);
+			vertex(21.10, 65.35);
+			vertex(30.85, 61.96);
+			vertex(25.84, 49.88);
+			vertex(16.55, 54.37);
+			vertex(16.55, 36.63);
+			vertex(25.84, 41.12);
+			vertex(30.85, 29.04);
+			vertex(21.10, 25.65);
+			vertex(33.65, 13.10);
+			vertex(37.04, 22.85);
+			vertex(49.12, 17.84);
+			vertex(44.63, 8.55);
+			vertex(62.37, 8.55);
+			vertex(57.88, 17.84);
+			vertex(69.96, 22.85);
+			vertex(73.35, 13.10);
+			vertex(85.90, 25.65);
+			vertex(76.15, 29.04);
+			vertex(81.16, 41.12);
+		endpolygon();
+
+#	gear
+		color(iconcolor);
+		bgnoutlinepolygon();
+			vertex(86.95, 41.13);
+			vertex(86.95, 58.87);
+			vertex(77.66, 54.38);
+			vertex(72.65, 66.46);
+			vertex(82.40, 69.85);
+			vertex(69.85, 82.40);
+			vertex(66.46, 72.65);
+			vertex(54.38, 77.66);
+			vertex(58.87, 86.95);
+			vertex(41.13, 86.95);
+			vertex(45.62, 77.66);
+			vertex(33.54, 72.65);
+			vertex(30.15, 82.40);
+			vertex(17.60, 69.85);
+			vertex(27.35, 66.46);
+			vertex(22.34, 54.38);
+			vertex(13.05, 58.87);
+			vertex(13.05, 41.13);
+			vertex(22.34, 45.62);
+			vertex(27.35, 33.54);
+			vertex(17.60, 30.15);
+			vertex(30.15, 17.60);
+			vertex(33.54, 27.35);
+			vertex(45.62, 22.34);
+			vertex(41.13, 13.05);
+			vertex(58.87, 13.05);
+			vertex(54.38, 22.34);
+			vertex(66.46, 27.35);
+			vertex(69.85, 17.60);
+			vertex(82.40, 30.15);
+			vertex(72.65, 33.54);
+			vertex(77.66, 45.62);
+		endoutlinepolygon(outlinecolor);
+
+#	hub hole
+		color(0);
+		bgnpolygon();
+			vertex(62.00, 50.00);
+			vertex(61.09, 54.59);
+			vertex(58.49, 58.49);
+			vertex(54.59, 61.09);
+			vertex(50.00, 62.00);
+			vertex(45.41, 61.09);
+			vertex(41.51, 58.49);
+			vertex(38.91, 54.59);
+			vertex(38.00, 50.00);
+			vertex(38.91, 45.41);
+			vertex(41.51, 41.51);
+			vertex(45.41, 38.91);
+			vertex(50.00, 38.00);
+			vertex(54.59, 38.91);
+			vertex(58.49, 41.51);
+			vertex(61.09, 45.41);
+		endpolygon();

@@ -1,0 +1,102 @@
+#	Genre icon: Media (play + note)
+#	ORIGINAL work of the Indigo-Magic-on-Linux project
+#	(indigo-appsync genre set) -- our copyright, freely
+#	redistributable. No SGI icon geometry is copied or traced;
+#	only the SGI .fti icon *language* (shadow+iconcolor+outline)
+#	is shared.  Canvas 0..100, y-up.
+
+#	shadow
+		color(shadowcolor);
+		bgnpolygon();
+			vertex(15.50, 23.50);
+			vertex(15.99, 20.41);
+			vertex(17.41, 17.62);
+			vertex(19.62, 15.41);
+			vertex(22.41, 13.99);
+			vertex(25.50, 13.50);
+			vertex(81.50, 13.50);
+			vertex(84.59, 13.99);
+			vertex(87.38, 15.41);
+			vertex(89.59, 17.62);
+			vertex(91.01, 20.41);
+			vertex(91.50, 23.50);
+			vertex(91.50, 67.50);
+			vertex(91.01, 70.59);
+			vertex(89.59, 73.38);
+			vertex(87.38, 75.59);
+			vertex(84.59, 77.01);
+			vertex(81.50, 77.50);
+			vertex(25.50, 77.50);
+			vertex(22.41, 77.01);
+			vertex(19.62, 75.59);
+			vertex(17.41, 73.38);
+			vertex(15.99, 70.59);
+			vertex(15.50, 67.50);
+		endpolygon();
+
+#	rounded screen
+		color(iconcolor);
+		bgnoutlinepolygon();
+			vertex(12.00, 28.00);
+			vertex(12.49, 24.91);
+			vertex(13.91, 22.12);
+			vertex(16.12, 19.91);
+			vertex(18.91, 18.49);
+			vertex(22.00, 18.00);
+			vertex(78.00, 18.00);
+			vertex(81.09, 18.49);
+			vertex(83.88, 19.91);
+			vertex(86.09, 22.12);
+			vertex(87.51, 24.91);
+			vertex(88.00, 28.00);
+			vertex(88.00, 72.00);
+			vertex(87.51, 75.09);
+			vertex(86.09, 77.88);
+			vertex(83.88, 80.09);
+			vertex(81.09, 81.51);
+			vertex(78.00, 82.00);
+			vertex(22.00, 82.00);
+			vertex(18.91, 81.51);
+			vertex(16.12, 80.09);
+			vertex(13.91, 77.88);
+			vertex(12.49, 75.09);
+			vertex(12.00, 72.00);
+		endoutlinepolygon(outlinecolor);
+
+#	play triangle (white)
+		color(7);
+		bgnpolygon();
+			vertex(40.00, 32.00);
+			vertex(40.00, 68.00);
+			vertex(70.00, 50.00);
+		endpolygon();
+
+		color(7);
+		bgnoutlinepolygon();
+			vertex(40.00, 32.00);
+			vertex(40.00, 68.00);
+			vertex(70.00, 50.00);
+		endoutlinepolygon(outlinecolor);
+
+#	note stem + head accent (blue)
+		color(outlinecolor);
+		bgnline();
+			vertex(26.00, 60.00);
+			vertex(26.00, 34.00);
+		endline();
+
+		color(4);
+		bgnpolygon();
+			vertex(29.00, 32.00);
+			vertex(28.33, 34.50);
+			vertex(26.50, 36.33);
+			vertex(24.00, 37.00);
+			vertex(21.50, 36.33);
+			vertex(19.67, 34.50);
+			vertex(19.00, 32.00);
+			vertex(19.67, 29.50);
+			vertex(21.50, 27.67);
+			vertex(24.00, 27.00);
+			vertex(26.50, 27.67);
+			vertex(28.33, 29.50);
+		endpolygon();

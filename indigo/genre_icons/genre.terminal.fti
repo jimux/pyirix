@@ -1,0 +1,47 @@
+#	Genre icon: Terminal (prompt)
+#	ORIGINAL work of the Indigo-Magic-on-Linux project
+#	(indigo-appsync genre set) -- our copyright, freely
+#	redistributable. No SGI icon geometry is copied or traced;
+#	only the SGI .fti icon *language* (shadow+iconcolor+outline)
+#	is shared.  Canvas 0..100, y-up.
+
+#	shadow
+		color(shadowcolor);
+		bgnpolygon();
+			vertex(15.50, 15.50);
+			vertex(91.50, 15.50);
+			vertex(91.50, 75.50);
+			vertex(15.50, 75.50);
+		endpolygon();
+
+#	bezel
+		color(iconcolor);
+		bgnoutlinepolygon();
+			vertex(12.00, 20.00);
+			vertex(88.00, 20.00);
+			vertex(88.00, 80.00);
+			vertex(12.00, 80.00);
+		endoutlinepolygon(outlinecolor);
+
+#	dark screen
+		color(0);
+		bgnpolygon();
+			vertex(20.00, 28.00);
+			vertex(80.00, 28.00);
+			vertex(80.00, 72.00);
+			vertex(20.00, 72.00);
+		endpolygon();
+
+#	green prompt: '>' chevron + cursor underscore
+		color(2);
+		bgnline();
+			vertex(28.00, 60.00);
+			vertex(38.00, 52.00);
+			vertex(28.00, 44.00);
+		endline();
+
+		color(2);
+		bgnline();
+			vertex(44.00, 44.00);
+			vertex(56.00, 44.00);
+		endline();

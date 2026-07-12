@@ -1,0 +1,115 @@
+#	Genre icon: Game (die)
+#	ORIGINAL work of the Indigo-Magic-on-Linux project
+#	(indigo-appsync genre set) -- our copyright, freely
+#	redistributable. No SGI icon geometry is copied or traced;
+#	only the SGI .fti icon *language* (shadow+iconcolor+outline)
+#	is shared.  Canvas 0..100, y-up.
+
+#	shadow
+		color(shadowcolor);
+		bgnpolygon();
+			vertex(53.50, 81.50);
+			vertex(87.50, 61.50);
+			vertex(87.50, 27.50);
+			vertex(53.50, 7.50);
+			vertex(19.50, 27.50);
+			vertex(19.50, 61.50);
+		endpolygon();
+
+#	top face
+		color(iconcolor);
+		bgnoutlinepolygon();
+			vertex(50.00, 86.00);
+			vertex(84.00, 66.00);
+			vertex(50.00, 46.00);
+			vertex(16.00, 66.00);
+		endoutlinepolygon(outlinecolor);
+
+#	left face (shadowed)
+		color(8);
+		bgnoutlinepolygon();
+			vertex(16.00, 66.00);
+			vertex(50.00, 46.00);
+			vertex(50.00, 12.00);
+			vertex(16.00, 32.00);
+		endoutlinepolygon(outlinecolor);
+
+#	right face
+		color(15);
+		bgnoutlinepolygon();
+			vertex(50.00, 46.00);
+			vertex(84.00, 66.00);
+			vertex(84.00, 32.00);
+			vertex(50.00, 12.00);
+		endoutlinepolygon(outlinecolor);
+
+#	pips
+		color(0);
+		bgnpolygon();
+			vertex(54.00, 66.00);
+			vertex(53.24, 68.35);
+			vertex(51.24, 69.80);
+			vertex(48.76, 69.80);
+			vertex(46.76, 68.35);
+			vertex(46.00, 66.00);
+			vertex(46.76, 63.65);
+			vertex(48.76, 62.20);
+			vertex(51.24, 62.20);
+			vertex(53.24, 63.65);
+		endpolygon();
+
+		color(0);
+		bgnpolygon();
+			vertex(33.20, 50.00);
+			vertex(32.59, 51.88);
+			vertex(30.99, 53.04);
+			vertex(29.01, 53.04);
+			vertex(27.41, 51.88);
+			vertex(26.80, 50.00);
+			vertex(27.41, 48.12);
+			vertex(29.01, 46.96);
+			vertex(30.99, 46.96);
+			vertex(32.59, 48.12);
+		endpolygon();
+
+		color(0);
+		bgnpolygon();
+			vertex(39.20, 40.00);
+			vertex(38.59, 41.88);
+			vertex(36.99, 43.04);
+			vertex(35.01, 43.04);
+			vertex(33.41, 41.88);
+			vertex(32.80, 40.00);
+			vertex(33.41, 38.12);
+			vertex(35.01, 36.96);
+			vertex(36.99, 36.96);
+			vertex(38.59, 38.12);
+		endpolygon();
+
+		color(0);
+		bgnpolygon();
+			vertex(67.20, 50.00);
+			vertex(66.59, 51.88);
+			vertex(64.99, 53.04);
+			vertex(63.01, 53.04);
+			vertex(61.41, 51.88);
+			vertex(60.80, 50.00);
+			vertex(61.41, 48.12);
+			vertex(63.01, 46.96);
+			vertex(64.99, 46.96);
+			vertex(66.59, 48.12);
+		endpolygon();
+
+		color(0);
+		bgnpolygon();
+			vertex(73.20, 40.00);
+			vertex(72.59, 41.88);
+			vertex(70.99, 43.04);
+			vertex(69.01, 43.04);
+			vertex(67.41, 41.88);
+			vertex(66.80, 40.00);
+			vertex(67.41, 38.12);
+			vertex(69.01, 36.96);
+			vertex(70.99, 36.96);
+			vertex(72.59, 38.12);
+		endpolygon();

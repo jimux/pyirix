@@ -79,6 +79,53 @@ def _cmd_make_package(args) -> int:
     return 0
 
 
+def _cmd_fti_check(args) -> int:
+    from pyirix.indigo import fti
+    paths = fti.find_corpus_fti(args.root)
+    ascii_p = [p for p in paths if fti.is_ascii_fti(p)]
+    other = len(paths) - len(ascii_p)
+    fails = 0
+    unknown = {}
+    for p in ascii_p:
+        try:
+            with open(p, errors="replace") as f:
+                ic = fti.parse(f.read(), strict=args.strict, path=p)
+        except Exception as e:
+            fails += 1
+            print(f"  FAIL {p}: {e}")
+            continue
+        for w in ic.warnings:
+            if "unknown command" in w:
+                cmd = w.split("'")[1]
+                unknown[cmd] = unknown.get(cmd, 0) + 1
+    print(f"filetype iconlib .fti: {len(paths)}  "
+          f"(ascii-vector {len(ascii_p)}, binary/empty {other})")
+    print(f"parse failures: {fails}/{len(ascii_p)}")
+    if unknown:
+        print(f"unknown commands: {unknown}")
+    return 1 if fails else 0
+
+
+def _cmd_fti_render(args) -> int:
+    from pyirix.indigo import fti
+    im, icon = fti.render_file(args.file, args.size)
+    im.save(args.out)
+    print(f"{args.file}: {len(icon.ops)} ops -> {args.out} ({args.size}px)")
+    if icon.warnings:
+        print(f"  warnings: {icon.warnings[:5]}")
+    return 0
+
+
+def _cmd_fti_sheet(args) -> int:
+    from pyirix.indigo import fti
+    paths = [p for p in fti.find_corpus_fti(args.root) if fti.is_ascii_fti(p)]
+    if args.limit:
+        paths = paths[:args.limit]
+    out = fti.contact_sheet(paths, args.out, cell=args.size, cols=args.cols)
+    print(f"contact sheet: {len(paths)} icons -> {out}")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="pyirix.indigo",
                                  description="Indigo Magic asset importer "
@@ -110,6 +157,28 @@ def main(argv=None) -> int:
                     help="comma-separated subset of deb,rpm,tgz "
                          "(default: all three)")
     mk.set_defaults(func=_cmd_make_package)
+
+    fc = sub.add_parser("fti-check",
+                        help="parse-coverage check over corpus .fti trees")
+    fc.add_argument("root", nargs="+", help="root dir(s) to walk for "
+                    "filetype/**/iconlib/*.fti")
+    fc.add_argument("--strict", action="store_true",
+                    help="fail on any grammar deviation")
+    fc.set_defaults(func=_cmd_fti_check)
+
+    fr = sub.add_parser("fti-render", help="rasterize one .fti to PNG")
+    fr.add_argument("file", help="path to a .fti file")
+    fr.add_argument("-o", "--out", default="icon.png", help="output PNG")
+    fr.add_argument("--size", type=int, default=64, help="pixel size")
+    fr.set_defaults(func=_cmd_fti_render)
+
+    fs = sub.add_parser("fti-sheet", help="render a contact sheet PNG")
+    fs.add_argument("root", nargs="+", help="root dir(s) to walk")
+    fs.add_argument("-o", "--out", default="contact_sheet.png")
+    fs.add_argument("--size", type=int, default=64, help="cell pixel size")
+    fs.add_argument("--cols", type=int, default=12)
+    fs.add_argument("--limit", type=int, default=0, help="cap icon count")
+    fs.set_defaults(func=_cmd_fti_sheet)
 
     args = ap.parse_args(argv)
     return args.func(args)

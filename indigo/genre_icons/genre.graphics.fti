@@ -1,0 +1,69 @@
+#	Genre icon: Graphics (picture)
+#	ORIGINAL work of the Indigo-Magic-on-Linux project
+#	(indigo-appsync genre set) -- our copyright, freely
+#	redistributable. No SGI icon geometry is copied or traced;
+#	only the SGI .fti icon *language* (shadow+iconcolor+outline)
+#	is shared.  Canvas 0..100, y-up.
+
+#	shadow
+		color(shadowcolor);
+		bgnpolygon();
+			vertex(15.50, 15.50);
+			vertex(91.50, 15.50);
+			vertex(91.50, 75.50);
+			vertex(15.50, 75.50);
+		endpolygon();
+
+#	frame
+		color(iconcolor);
+		bgnoutlinepolygon();
+			vertex(12.00, 20.00);
+			vertex(88.00, 20.00);
+			vertex(88.00, 80.00);
+			vertex(12.00, 80.00);
+		endoutlinepolygon(outlinecolor);
+
+#	sky
+		color(4);
+		bgnpolygon();
+			vertex(20.00, 28.00);
+			vertex(80.00, 28.00);
+			vertex(80.00, 72.00);
+			vertex(20.00, 72.00);
+		endpolygon();
+
+#	sun (yellow)
+		color(3);
+		bgnpolygon();
+			vertex(72.00, 60.00);
+			vertex(70.93, 64.00);
+			vertex(68.00, 66.93);
+			vertex(64.00, 68.00);
+			vertex(60.00, 66.93);
+			vertex(57.07, 64.00);
+			vertex(56.00, 60.00);
+			vertex(57.07, 56.00);
+			vertex(60.00, 53.07);
+			vertex(64.00, 52.00);
+			vertex(68.00, 53.07);
+			vertex(70.93, 56.00);
+		endpolygon();
+
+#	mountain (green)
+		color(2);
+		bgnpolygon();
+			vertex(20.00, 28.00);
+			vertex(44.00, 58.00);
+			vertex(60.00, 40.00);
+			vertex(80.00, 60.00);
+			vertex(80.00, 28.00);
+		endpolygon();
+
+#	frame inner outline
+		color(outlinecolor);
+		bgnclosedline();
+			vertex(20.00, 28.00);
+			vertex(80.00, 28.00);
+			vertex(80.00, 72.00);
+			vertex(20.00, 72.00);
+		endclosedline();

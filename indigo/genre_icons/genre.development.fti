@@ -1,0 +1,87 @@
+#	Genre icon: Development (code)
+#	ORIGINAL work of the Indigo-Magic-on-Linux project
+#	(indigo-appsync genre set) -- our copyright, freely
+#	redistributable. No SGI icon geometry is copied or traced;
+#	only the SGI .fti icon *language* (shadow+iconcolor+outline)
+#	is shared.  Canvas 0..100, y-up.
+
+#	shadow
+		color(shadowcolor);
+		bgnpolygon();
+			vertex(15.50, 20.50);
+			vertex(15.94, 17.72);
+			vertex(17.22, 15.21);
+			vertex(19.21, 13.22);
+			vertex(21.72, 11.94);
+			vertex(24.50, 11.50);
+			vertex(82.50, 11.50);
+			vertex(85.28, 11.94);
+			vertex(87.79, 13.22);
+			vertex(89.78, 15.21);
+			vertex(91.06, 17.72);
+			vertex(91.50, 20.50);
+			vertex(91.50, 70.50);
+			vertex(91.06, 73.28);
+			vertex(89.78, 75.79);
+			vertex(87.79, 77.78);
+			vertex(85.28, 79.06);
+			vertex(82.50, 79.50);
+			vertex(24.50, 79.50);
+			vertex(21.72, 79.06);
+			vertex(19.21, 77.78);
+			vertex(17.22, 75.79);
+			vertex(15.94, 73.28);
+			vertex(15.50, 70.50);
+		endpolygon();
+
+#	card
+		color(iconcolor);
+		bgnoutlinepolygon();
+			vertex(12.00, 25.00);
+			vertex(12.44, 22.22);
+			vertex(13.72, 19.71);
+			vertex(15.71, 17.72);
+			vertex(18.22, 16.44);
+			vertex(21.00, 16.00);
+			vertex(79.00, 16.00);
+			vertex(81.78, 16.44);
+			vertex(84.29, 17.72);
+			vertex(86.28, 19.71);
+			vertex(87.56, 22.22);
+			vertex(88.00, 25.00);
+			vertex(88.00, 75.00);
+			vertex(87.56, 77.78);
+			vertex(86.28, 80.29);
+			vertex(84.29, 82.28);
+			vertex(81.78, 83.56);
+			vertex(79.00, 84.00);
+			vertex(21.00, 84.00);
+			vertex(18.22, 83.56);
+			vertex(15.71, 82.28);
+			vertex(13.72, 80.29);
+			vertex(12.44, 77.78);
+			vertex(12.00, 75.00);
+		endoutlinepolygon(outlinecolor);
+
+#	'<' left bracket (blue)
+		color(4);
+		bgnline();
+			vertex(40.00, 66.00);
+			vertex(24.00, 50.00);
+			vertex(40.00, 34.00);
+		endline();
+
+#	'>' right bracket (blue)
+		color(4);
+		bgnline();
+			vertex(60.00, 66.00);
+			vertex(76.00, 50.00);
+			vertex(60.00, 34.00);
+		endline();
+
+#	'/' slash (red)
+		color(1);
+		bgnline();
+			vertex(56.00, 30.00);
+			vertex(44.00, 70.00);
+		endline();
