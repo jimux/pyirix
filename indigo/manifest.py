@@ -88,6 +88,17 @@ MANIFEST: tuple[ManifestEntry, ...] = (
         min_count=1, count_kind="files", required=False,
     ),
     ManifestEntry(
+        name="rgb-colors",
+        prefix="usr/lib/X11/rgb.txt",
+        products=("x_eoe.sw.Server",),
+        min_count=1, count_kind="files", required=False,
+        note="SGI-named X colors (SGIGray*, SGIDarkGray, sgilightblue, ...) "
+             "referenced by schemes/app-defaults but absent from stock Linux "
+             "rgb.txt; single file only — rgb.dir/rgb.pag are a regenerable "
+             "dbm cache of it (rebuild with `rgb -o <dir> rgb.txt` if needed, "
+             "not imported here).",
+    ),
+    ManifestEntry(
         name="sounds",
         prefix="usr/share/data/sounds",
         products=("dmedia_eoe", "soundscheme"),

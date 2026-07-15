@@ -299,7 +299,11 @@ def _recompute_categories(dest_root: str) -> dict:
     for e in M.MANIFEST:
         base = os.path.join(dest_root, e.prefix)
         rels = []
-        if os.path.isdir(base):
+        if os.path.isfile(base) or os.path.islink(base):
+            # single-file manifest entry (e.g. rgb.txt): the prefix IS the
+            # item, not a directory to walk.
+            rels.append(e.prefix)
+        elif os.path.isdir(base):
             for dp, _d, files in os.walk(base):
                 for fn in files:
                     full = os.path.join(dp, fn)
