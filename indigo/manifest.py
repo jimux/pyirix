@@ -111,6 +111,45 @@ MANIFEST: tuple[ManifestEntry, ...] = (
         min_count=10, count_kind="files", required=False,
         note="per-saver X-resource defaults + modules dir listing",
     ),
+    ManifestEntry(
+        name="backgrounds",
+        prefix="usr/lib/X11/system.backgrounds",
+        products=("desktop_eoe.sw.control_panels",),
+        min_count=1, count_kind="files", required=False,
+        note="the background registry (names + `-solid`/`-bitmap` "
+             "descriptions for every entry in the Background customize "
+             "panel); first entry is the genuine default `Solid "
+             "sgiLightBlue`, NOT the dithered-granite look users remember "
+             "(see progress_notes/indigo_linux/19-desktop-fidelity.md "
+             "bug 2). Single file — its `-bitmap` entries resolve into "
+             "the background-bitmaps category below.",
+    ),
+    ManifestEntry(
+        name="background-bitmaps",
+        prefix="usr/include/X11/bitmaps/sgidesktop",
+        products=("desktop_eoe.sw.control_panels", "desktop_eoe.sw.envm",
+                  "sysadmdesktop.sw.base", "sysadmdesktop.sw.sysadm"),
+        min_count=10, count_kind="files", required=False,
+        note="whole directory imported as a tree, like other categories "
+             "here: the background xpm/bmp/xbm textures referenced by "
+             "system.backgrounds (granite2small, midgranitesmall, marble/"
+             "linen/pattern*/scribble/...) share this dir with unrelated "
+             "fm(bitmaps) and sysadmdesktop icon bitmaps — not filtered "
+             "out, same tree-import policy as e.g. iconcatalog.",
+    ),
+    ManifestEntry(
+        name="granite-bitmap",
+        prefix="usr/include/X11/bitmaps/granite",
+        products=("x_eoe.sw.eoe",),
+        min_count=1, count_kind="files", required=False,
+        note="4Dwm's own no-desktop fallback background bitmap "
+             "(app-defaults `*defaultBackgroundDescription: -bitmap "
+             "/usr/include/X11/bitmaps/granite ...`); lives under x_eoe, "
+             "a sibling of usr/include/X11/bitmaps/ that also holds many "
+             "unrelated cursor/pattern bitmaps (gray, box6, left_ptr, "
+             "...) — deliberately NOT imported by prefixing the whole "
+             "bitmaps/ dir, so this is its own single-file entry.",
+    ),
 )
 
 
