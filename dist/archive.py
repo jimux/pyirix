@@ -133,15 +133,87 @@ def archive_of_entry(entry: IDBEntry) -> str:
     return ss.rsplit(".", 1)[0] if "." in ss else ss
 
 
+def _entry_payload_len(size: int, cmpsize: int) -> int:
+    """Bytes the entry's payload occupies in the .sw record. Mirrors
+    extract_one's stored-vs-compressed rule: stored (cmpsize 0 or == size) uses
+    `size`, otherwise the compressed `cmpsize`."""
+    return cmpsize if (cmpsize and cmpsize != size) else size
+
+
+def _walk_offsets(sw_bytes: bytes, entries: list) -> dict | None:
+    """Reconstruct offsets by WALKING the self-describing record stream.
+
+    The .sw is `[header][ (u16-BE pathlen)(path)(payload) ]*`. Each record names
+    its own path, so we can resynchronize on it and advance by that entry's
+    payload length (from the idb). This is immune to the two ways the cumulative
+    counter drifts on real media: idb file-entry order not matching the stream,
+    and the stream carrying more/duplicate records than the idb lists (observed
+    on the Impact 6.2 demo disc — 3651 stream records vs 3647 idb file entries —
+    where cumulative counting misaligns every offset).
+
+    Returns {install_path_without_leading_slash: offset} covering every stream
+    record, or None if the stream can't be matched to `entries` (caller then
+    falls back to the cumulative estimate).
+    """
+    meta = {e.install_path.lstrip("/"): (e.size, e.cmpsize) for e in entries}
+    if not meta:
+        return None
+    n = len(sw_bytes)
+    # Locate the first record: scan the short leading header for a u16 pathlen
+    # that spells a path we know.
+    start = None
+    for hdr in range(0, 64):
+        if hdr + 2 > n:
+            break
+        pl = int.from_bytes(sw_bytes[hdr:hdr + 2], "big")
+        if 0 < pl < 1024 and hdr + 2 + pl <= n:
+            try:
+                cand = sw_bytes[hdr + 2:hdr + 2 + pl].decode("latin-1")
+            except Exception:
+                continue
+            if cand in meta:
+                start = hdr
+                break
+    if start is None:
+        return None
+    out: dict = {}
+    off = start
+    while off + 2 <= n:
+        pl = int.from_bytes(sw_bytes[off:off + 2], "big")
+        if pl == 0 or pl > 1024 or off + 2 + pl > n:
+            break
+        path = sw_bytes[off + 2:off + 2 + pl].decode("latin-1")
+        m = meta.get(path)
+        if m is None:
+            # desync — a record whose path we can't size; bail to the fallback
+            return None
+        out[path] = off
+        off += 2 + pl + _entry_payload_len(*m)
+    # Require near-complete coverage (a truncated/odd walk shouldn't win over the
+    # cumulative estimate).
+    if len(out) < len(meta) * 0.9:
+        return None
+    return out
+
+
 def _reconstruct_offsets(sw_bytes: bytes, entries: list, default_header: int = 13):
     """Set entry.offset for archives whose idb omitted `off(...)`.
 
     Record layout: [u16-BE pathlen][path][payload], payload = cmpsize bytes when
     compressed else size bytes; the archive starts with a short `im001Vxxx Pxx`
-    header. Directory/symlink entries carry no archive bytes. We auto-detect the
-    header length by locating the first entry's stored path, then walk cumulatively.
+    header. Primary strategy = walk the self-describing stream (`_walk_offsets`,
+    resynchronizing on each record's path); if that can't match the stream, fall
+    back to the cumulative estimate (auto-detecting the header length by locating
+    the first entry's stored path).
     """
     if not entries:
+        return
+    walk = _walk_offsets(sw_bytes, entries)
+    if walk is not None:
+        for e in entries:
+            key = e.install_path.lstrip("/")
+            if key in walk:
+                e.offset = walk[key]
         return
     first = entries[0].install_path.lstrip("/").encode("latin-1", "replace")
     idx = sw_bytes.find(first, 0, 1024)
