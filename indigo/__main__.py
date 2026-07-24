@@ -82,7 +82,8 @@ def _cmd_make_package(args) -> int:
 def _cmd_appsync(args) -> int:
     from pyirix.indigo.appsync import run_appsync
     dirs = args.appdir or None
-    res = run_appsync(dest=args.dest, dirs=dirs, force=args.force)
+    res = run_appsync(dest=args.dest, dirs=dirs, force=args.force,
+                      single_page=args.page)
     print(f"data root:   {res.data_root}")
     print(f"apps:        {len(res.apps)}  (changed={res.changed})")
     print(f"hostapps.ftr: {res.ftr_path}")
@@ -185,6 +186,11 @@ def main(argv=None) -> int:
                          help="override .desktop scan dir(s) (repeatable)")
     ap_sync.add_argument("--force", action="store_true",
                          help="force regenerate even if content is unchanged")
+    ap_sync.add_argument("--page", default=None,
+                         help="route ALL host apps onto ONE Icon Catalog page "
+                              "(e.g. HostApps) instead of the Categories map; "
+                              "keeps the imported catalog's pristine pages "
+                              "untouched")
     ap_sync.add_argument("--watch", action="store_true",
                          help="(stub) live-refresh; arrives with the fm port")
     ap_sync.set_defaults(func=_cmd_appsync)

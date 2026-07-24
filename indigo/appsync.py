@@ -307,7 +307,16 @@ def ftr_type(app: DesktopApp) -> str:
         f'\tMATCH       ascii && (string({MARKER_OFFSET},{k}) == "{_ftr_escape(marker_line(app.app_id))}");\n'
         f"\tLEGEND      {legend}\n"
         f"\tSUPERTYPE   Executable\n"
-        f"\tCMD OPEN    $LEADER\n"
+        # CMD OPEN dispatches by app id, NOT $LEADER: fm runs the command via
+        # `/bin/sh -c` with the file's (possibly Icon-Catalog, space-bearing,
+        # $INDIGO_DATA_ROOT-overlay) path as $LEADER, and that path is not
+        # host-executable (the pathmap interposer covers open/stat, not exec).
+        # `indigo-launch <id>` is host-resolvable (on PATH) and reads the app's
+        # real Exec line from hostapps/exec.tab, so double-click launch works
+        # from the dirview AND the Icon Catalog. The launched child inherits
+        # fm's env (fork+putenv), so INDIGO_DATA_ROOT / INDIGO_HOST_DISPLAY /
+        # PATH all propagate.
+        f"\tCMD OPEN    indigo-launch {app.app_id}\n"
         f"\tICON {{\n"
         f'\tinclude("iconlib/hostapp.{app.genre}.fti");\n'
         f"\t}}\n"
@@ -359,6 +368,12 @@ if [ "$mode" = outer ]; then
     fi
 fi
 
+# Drop the exec-path-translation shim (libindigoexec.so) before running the
+# real host application: it exists only to let fm's shell resolve the
+# IRIX-canonical launcher path in the Icon Catalog, and must never be inherited
+# by the host app itself.
+unset LD_PRELOAD
+
 # Locate the launcher script for <id> and read its Exec line back out of the
 # generated exec-table, stripping freedesktop field codes (%f %F %u %U %i %c
 # %k %d %D %n %N %v %m); %% -> literal %.
@@ -371,6 +386,22 @@ cmd=`printf '%s' "$line" | cut -f2-`
 # Strip field codes. Deprecated/single-letter codes that take no runtime value
 # here are simply removed; %% becomes %.
 cmd=`printf '%s' "$cmd" | sed -e 's/%[fFuUickdDnNvm]//g' -e 's/%%/%/g'`
+
+# CRITICAL: drop the launcher dir ($root/hostapps/bin) from PATH before running
+# the real app.  The launcher scripts are named by app id, and an id can equal
+# the target binary name (e.g. id "xclock" whose Exec is "xclock"); with the
+# launcher dir still on PATH the "real" command would re-resolve to THIS
+# launcher and recurse -> a fork bomb.  Filtering the launcher dir makes the
+# app name resolve to the genuine host binary.
+lbin="$root/hostapps/bin"
+newpath=""
+oldifs="$IFS"; IFS=:
+for d in $PATH; do
+    [ "$d" = "$lbin" ] && continue
+    if [ -z "$newpath" ]; then newpath="$d"; else newpath="$newpath:$d"; fi
+done
+IFS="$oldifs"
+PATH="$newpath"; export PATH
 
 exec /bin/sh -c "$cmd \"\$@\"" indigo-launch "$@"
 '''
@@ -426,16 +457,25 @@ def _write_exec(path: str, text: str) -> None:
 
 def run_appsync(dest: str | None = None,
                 dirs: list[str] | None = None,
-                force: bool = False) -> AppsyncResult:
+                force: bool = False,
+                single_page: str | None = None) -> AppsyncResult:
     """Full, idempotent regenerate of the appsync data pipeline.
 
     Returns the result and whether anything changed (``changed`` False lets a
     caller skip the fftr recompile). Does NOT compile ``.otr`` (that is the
     ported-fftr / stock-fftr step, driven separately).
+
+    ``single_page`` (e.g. ``"HostApps"``) routes every host app onto ONE
+    dedicated Icon Catalog page instead of the per-Categories page map. The
+    live overlay uses this so appsync never touches the imported catalog's
+    pristine pages (it only creates/cleans its own dedicated page dir).
     """
     from pyirix.indigo.config import resolve_data_root
     root = resolve_data_root(dest)
     apps = scan_desktop_entries(dirs)
+
+    def _page(app: DesktopApp) -> str:
+        return single_page or app.page
 
     chash = _content_hash(apps)
     hash_path = os.path.join(root, "hostapps", ".appsync-hash")
@@ -483,7 +523,7 @@ def run_appsync(dest: str | None = None,
     pages: dict[str, list[str]] = {}
     # Clean our own page dirs first (idempotent; leaves foreign pages alone).
     for a in apps:
-        pages.setdefault(a.page, [])
+        pages.setdefault(_page(a), [])
     for page in list(pages):
         pdir = os.path.join(pages_root, page)
         if os.path.isdir(pdir):
@@ -493,11 +533,12 @@ def run_appsync(dest: str | None = None,
                     os.unlink(op)
     seen: dict[str, set[str]] = {}
     for a in apps:
-        pdir = os.path.join(pages_root, a.page)
+        apage = _page(a)
+        pdir = os.path.join(pages_root, apage)
         os.makedirs(pdir, exist_ok=True)
         # Page entry name = the app's display Name, uniquified within a page.
         base = re.sub(r"[/\x00]", "_", a.name).strip() or a.app_id
-        used = seen.setdefault(a.page, set())
+        used = seen.setdefault(apage, set())
         name = base
         n = 2
         while name in used:
@@ -509,7 +550,7 @@ def run_appsync(dest: str | None = None,
         if os.path.islink(link) or os.path.exists(link):
             os.unlink(link)
         os.symlink(target, link)
-        pages[a.page].append(name)
+        pages[apage].append(name)
 
     # Record the content hash last (so a crash mid-run re-runs next time).
     Path(hash_path).write_text(chash + "\n")
@@ -518,7 +559,7 @@ def run_appsync(dest: str | None = None,
     page_counts: dict[str, int] = {}
     for a in apps:
         genre_counts[a.genre] = genre_counts.get(a.genre, 0) + 1
-        page_counts[a.page] = page_counts.get(a.page, 0) + 1
+        page_counts[_page(a)] = page_counts.get(_page(a), 0) + 1
 
     return AppsyncResult(
         data_root=root, apps=apps, ftr_path=ftr_path, launch_dir=bin_dir,
