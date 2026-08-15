@@ -156,9 +156,12 @@ def _write_symlink(dest_root: str, rel: str, target: str,
 # ── installed-tree extraction ────────────────────────────────────────────
 
 def _import_installed(provider: FileProvider, dest_root: str,
-                      file_map: dict, source_id: str) -> ImportStats:
+                      file_map: dict, source_id: str,
+                      only: "set[str] | None" = None) -> ImportStats:
     st = ImportStats(mode="installed_tree")
     for entry in M.MANIFEST:
+        if only is not None and entry.name not in only:
+            continue
         if not provider.exists(entry.prefix):
             continue
         cat_count = 0
@@ -187,7 +190,8 @@ def _import_installed(provider: FileProvider, dest_root: str,
 # ── dist-media extraction ────────────────────────────────────────────────
 
 def _import_dist(provider: FileProvider, products: list, dest_root: str,
-                 file_map: dict, source_id: str) -> ImportStats:
+                 file_map: dict, source_id: str,
+                 only: "set[str] | None" = None) -> ImportStats:
     st = ImportStats(mode="dist_media")
     st.products = [p for _, p in products]
     for prod_dir, product in products:
@@ -203,6 +207,8 @@ def _import_dist(provider: FileProvider, products: list, dest_root: str,
         for e in idb.entries:
             me = M.match_entry(e.install_path)
             if me is None:
+                continue
+            if only is not None and me.name not in only:
                 continue
             if e.is_dir:
                 os.makedirs(os.path.join(dest_root,
@@ -353,22 +359,32 @@ def _write_receipt(dest_root: str, receipt: dict):
 
 # ── public API ───────────────────────────────────────────────────────────
 
-def import_source(src: Source, dest_root: str, receipt: dict) -> ImportStats:
-    """Import one opened Source into dest_root, updating the receipt dict."""
+def import_source(src: Source, dest_root: str, receipt: dict,
+                  only: "set[str] | None" = None) -> ImportStats:
+    """Import one opened Source into dest_root, updating the receipt dict.
+
+    `only` restricts the import to those manifest CATEGORY names (see
+    ``manifest.MANIFEST``); None imports every category.  See `run_import`
+    for why a partial import is a first-class operation.
+    """
     provider = src.provider
     mode, products = detect_mode(provider)
     source_id = f"{src.stype}:{src.identity.get('name', '')}"
     if mode == "dist_media":
         st = _import_dist(provider, products, dest_root,
-                          receipt["files"], source_id)
+                          receipt["files"], source_id, only=only)
     else:
         st = _import_installed(provider, dest_root,
-                               receipt["files"], source_id)
+                               receipt["files"], source_id, only=only)
     st.source_type = src.stype
     st.source_identity = dict(src.identity)
     receipt["sources"].append({
         **src.identity,
         "mode": st.mode,
+        # Provenance: a partial import must SAY it was partial, or the receipt
+        # reads as "this whole root came from here" and the next reader trusts
+        # categories this source never wrote.
+        **({"only_categories": sorted(only)} if only is not None else {}),
         "files": st.files,
         "symlinks": st.symlinks,
         "dirs": st.dirs,
@@ -380,21 +396,45 @@ def import_source(src: Source, dest_root: str, receipt: dict) -> ImportStats:
     return st
 
 
-def run_import(source_paths, dest=None, run_poststeps=True):
+def run_import(source_paths, dest=None, run_poststeps=True, only=None):
     """Import one or more sources into the resolved data root.
+
+    `only` is an iterable of manifest CATEGORY names (``app-defaults``,
+    ``fonts``, …) restricting what this run writes.
+
+    Why partial imports exist (leg-132): a user's media set is not one
+    revision.  The 6.5.5 dist CDs and a 6.5.5 machine's installed disk carry
+    DIFFERENT revisions of the same asset — measured, 48 of 323 app-defaults
+    files differ between them, the installed disk being the later build — and
+    a whole-root re-import to pick up one category's newer revision would
+    silently restate every other category from the second source too.  A
+    category-scoped import layers exactly the intended assets and records the
+    restriction in the receipt.
 
     Returns (data_root, receipt, [ImportStats,...]).
     """
+    only_set = None
+    if only:
+        only_set = set(only)
+        known = {e.name for e in M.MANIFEST}
+        unknown = only_set - known
+        if unknown:
+            raise ValueError(
+                "unknown asset category %s; known: %s"
+                % (", ".join(sorted(unknown)), ", ".join(sorted(known))))
     dest_root = resolve_data_root(dest)
     os.makedirs(dest_root, exist_ok=True)
     receipt = _load_receipt(dest_root)
     all_stats = []
     for sp in source_paths:
         with open_source(sp) as src:
-            st = import_source(src, dest_root, receipt)
+            st = import_source(src, dest_root, receipt, only=only_set)
             all_stats.append(st)
 
-    if run_poststeps:
+    # A category-scoped run that did not touch `fonts` has no font dirs to
+    # re-index; running the post-step anyway would overwrite the receipt's
+    # record of the run that DID import them.
+    if run_poststeps and (only_set is None or "fonts" in only_set):
         post = _run_font_poststep(dest_root)
         # keep only the latest font post-step result
         receipt["post_steps"] = [

@@ -31,7 +31,8 @@ from pyirix.indigo.verify import verify as run_verify
 
 def _cmd_import(args) -> int:
     dest, receipt, stats = run_import(args.source, dest=args.dest,
-                                      run_poststeps=not args.no_poststeps)
+                                      run_poststeps=not args.no_poststeps,
+                                      only=args.only or None)
     print(f"imported into: {dest}")
     for st in stats:
         ident = st.source_identity.get("name", "?")
@@ -159,6 +160,13 @@ def main(argv=None) -> int:
     imp.add_argument("--dest", default=None, help="data root (override)")
     imp.add_argument("--no-poststeps", action="store_true",
                      help="skip mkfontdir/mkfontscale font post-step")
+    imp.add_argument("--only", action="append", metavar="CATEGORY",
+                     help="import ONLY this asset category (repeatable): "
+                          "schemes, fonts, filetype, iconcatalog, "
+                          "app-defaults, rgb-colors, sounds, savers, "
+                          "backgrounds, background-bitmaps, granite-bitmap. "
+                          "Use to layer ONE category from a later-revision "
+                          "source over an existing root")
     imp.set_defaults(func=_cmd_import)
 
     ver = sub.add_parser("verify", help="verify a populated data root")
