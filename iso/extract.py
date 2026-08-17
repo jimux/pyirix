@@ -93,11 +93,38 @@ def list_recursive(path: str) -> list[str]:
     raise RuntimeError("list_recursive requires bsdtar")
 
 
-def extract_recursive(path: str, dest_dir: str, backend: str | None = None) -> ExtractStats:
+# Per-backend wall-clock cap. Some real SGI ISOs drive a backend into a
+# runaway loop rather than an error: `IRIX 6.5.6 Base Documentation -
+# 812-0779-006.iso` kept xorriso spinning at 100% CPU for TEN HOURS (1.2GB
+# RSS, still going) instead of failing, which silently wedges a whole batch
+# sweep. Cap each attempt so a pathological image costs one timeout and then
+# falls through to the next backend.
+DEFAULT_BACKEND_TIMEOUT = 1800  # seconds
+
+
+def _clear_dir(dest_dir: str) -> None:
+    """Empty `dest_dir` without removing it (partial output from a failed or
+    timed-out backend must not be mistaken for the next backend's success)."""
+    for entry in os.scandir(dest_dir):
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                shutil.rmtree(entry.path, ignore_errors=True)
+            else:
+                os.unlink(entry.path)
+        except OSError:
+            pass
+
+
+def extract_recursive(path: str, dest_dir: str, backend: str | None = None,
+                      timeout: float | None = DEFAULT_BACKEND_TIMEOUT) -> ExtractStats:
     """Extract an ISO9660 image to `dest_dir`. Returns ExtractStats.
 
     Mirrors pyirix.efs.reader.extract_recursive's role. Chooses bsdtar by default
     (handles Rock Ridge long names), falls back to xorriso then 7z.
+
+    `timeout` caps each backend attempt (None disables). A backend that times
+    out has its partial output discarded and is treated as a failure, so the
+    next backend gets a clean directory.
     """
     if not is_iso9660(path):
         raise ValueError(f"not an ISO9660 image (no CD001 PVD): {path}")
@@ -114,18 +141,26 @@ def extract_recursive(path: str, dest_dir: str, backend: str | None = None) -> E
     # having extracted nothing on Rock-Ridge-less SGI ISOs.
     last = None
     for be in candidates:
-        rc, err = _extract_with(be, path, dest_dir)
+        rc, err, timed_out = _extract_with(be, path, dest_dir, timeout=timeout)
+        if timed_out:
+            # Whatever it managed to write is an arbitrary partial tree --
+            # counting it as success would silently catalog half a disc.
+            _clear_dir(dest_dir)
+            last = f"{be}: {err}"
+            continue
         st = _tally(dest_dir, be)
         if st.files > 0:
             st.errors = [err] if (rc != 0 and err) else []
             return st
+        _clear_dir(dest_dir)
         last = f"{be}: rc={rc} {err[:200]}"
     raise RuntimeError(f"ISO extraction failed for {path}: {last}")
 
 
-def _extract_with(backend: str, path: str, dest_dir: str):
-    """Run a backend; return (returncode, stderr). Never raises on tool error —
-    the caller decides success by counting extracted files."""
+def _extract_with(backend: str, path: str, dest_dir: str,
+                  timeout: float | None = None):
+    """Run a backend; return (returncode, stderr, timed_out). Never raises on
+    tool error — the caller decides success by counting extracted files."""
     if backend == "bsdtar":
         cmd = ["bsdtar", "-C", dest_dir, "-xf", path]
     elif backend == "xorriso":
@@ -137,8 +172,13 @@ def _extract_with(backend: str, path: str, dest_dir: str):
         cmd = ["7z", "x", "-y", f"-o{dest_dir}", path]
     else:
         raise ValueError(f"unknown backend: {backend}")
-    res = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    return res.returncode, res.stderr.strip()
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False,
+                             timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # subprocess.run kills the child before re-raising.
+        return -1, f"timed out after {timeout}s", True
+    return res.returncode, res.stderr.strip(), False
 
 
 def _tally(dest_dir: str, backend: str) -> ExtractStats:

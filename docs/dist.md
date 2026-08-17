@@ -113,6 +113,23 @@ report = audit_disk("disk.qcow2", "/images/Foundation1.img")   # compares instal
 print(report.summary())                       # complete / partial / empty per product
 ```
 
+## Cataloging a whole medium: `media_walker`
+
+`media_walker` takes an **ISO, an SGI EFS image, or an already-extracted directory** and finds every inst/tardist item in it at any depth — regardless of whether the disc calls its package directory `dist/`, `install/`, or something nested. Each `.idb` and `pd001` spec becomes JSON; each product's archives are unpacked and every file's install path, subsystem, mode, source archive, and content hash recorded. `.tardist` bundles are unpacked and processed recursively, with lineage tagged `<tardist>!<member>`.
+
+```python
+from pyirix.dist.media_walker import walk_media, validate_output
+
+walk_media("IRIX 6.5 Foundation 1.img", "out/f1")                        # keeps extracted files
+walk_media("IRIX 6.5 Foundation 1.img", "out/f1", retain_extractions=False)  # JSON + hashes only
+report = validate_output("IRIX 6.5 Foundation 1.img", "out/f1")
+print(report["ok"], report["counts"])
+```
+
+**Retaining extracted content is optional.** With `retain_extractions=False` every file is still extracted and hashed, but the bytes are discarded right after hashing — the output is JSON only, a small fraction of the size (on the local corpus, 58GB → ~700MB). Nothing is lost: `validate_output` hash-checks retained copies where they exist, and for non-retained entries **re-derives the bytes straight out of the source image's archive** (using the recorded archive + offset/size) and verifies those, so a metadata-only corpus stays fully provable against its source media. Anything actually needed later is re-extracted on demand with `archive.extract_product`.
+
+`validate_output` re-derives the ground-truth inventory from the image and reports what's missing or drifted: absent JSON, files missing on disk, hash mismatches (`hash_mismatch` / `hash_mismatch_against_image`), a changed source image (`source_image_changed`), and stale "missing archive" records the current extractor could now resolve (`archive_now_resolvable`).
+
 ## CLIs
 
 ```bash
@@ -138,6 +155,11 @@ python -m pyirix.dist.pkg_selector --platform indy --target 6.5
 python -m pyirix.dist.combine build  -o combo.img --source DIR
 python -m pyirix.dist.combine check  --source DIR
 python -m pyirix.dist.combine verify -o combo.img
+
+# media_walker — walk an ISO/EFS image (or extracted dir) for inst/tardist items
+python -m pyirix.dist.media_walker IMAGE -o OUTDIR [--hash md5] [--iso-backend xorriso]
+python -m pyirix.dist.media_walker IMAGE -o OUTDIR --no-retain-extractions  # JSON + hashes only
+python -m pyirix.dist.media_walker IMAGE -o OUTDIR --validate               # re-verify a prior run
 
 # idb / archive / audit / patch
 python -m pyirix.dist.idb     <file.idb> [--json] [--subsystem NAME] [--files-only]

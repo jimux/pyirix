@@ -99,11 +99,14 @@ def _parse_mode(s: str) -> int:
 
 
 # Subsystem matches `product.bundle.subname` — e.g. 4Dwm.sw.4Dwm,
-# desktop_eoe.man.relnotes, sysadmdesktop.sw.base.
+# desktop_eoe.man.relnotes, sysadmdesktop.sw.base, motif21_dev.sw.Xm-debug.
 # Product names CAN start with a digit (4Dwm, 3Dgames), so the first
-# char is `[a-zA-Z0-9_]`, not `[a-zA-Z_]`.
+# char is `[a-zA-Z0-9_]`, not `[a-zA-Z_]`. Components can contain hyphens
+# (e.g. the "-debug" subsystem suffix on 6.5.5 Overlays media), so `-` joins
+# `\w`/`+` in the continuation classes -- without it those lines fall through
+# with subsystem="" and archive_of_entry() misidentifies the archive.
 _SUBSYS_RE = re.compile(
-    r"^[a-zA-Z0-9_][\w+]*(?:\.[\w+]+){2,}$"
+    r"^[a-zA-Z0-9_][\w+-]*(?:\.[\w+-]+){2,}$"
 )
 
 

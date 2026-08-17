@@ -21,6 +21,7 @@ API:
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -133,6 +134,51 @@ def archive_of_entry(entry: IDBEntry) -> str:
     return ss.rsplit(".", 1)[0] if "." in ss else ss
 
 
+def _under_alias_symlink(path: Path, root: Path) -> bool:
+    """True if any ancestor directory of `path` (up to `root`) is itself a
+    symlink. Some IRIX idbs declare redundant entries reached only by
+    resolving through a directory-alias symlink they ALSO declare (e.g.
+    "l usr/lib/cron -> ../../etc/cron.d" plus "d usr/lib/cron/queuedefs",
+    where the real "f etc/cron.d/queuedefs" is declared separately). Since a
+    symlinked ancestor makes the OS resolve the rest of the path through it,
+    materializing such an entry lands at the alias's real target and can
+    ELOOP or directory/file-collide with the canonical entry declared there
+    -- see extract_product's per-entry loop, which skips these instead.
+    """
+    cur = path.parent
+    while True:
+        if cur == root or cur == cur.parent:
+            return False
+        if cur.is_symlink():
+            return True
+        cur = cur.parent
+
+
+def resolve_archive(install_dir: str | Path, product: str, archive: str) -> Path | None:
+    """Resolve an `archive_of_entry()` name to the actual archive file in
+    `install_dir`, or None if it can't be found.
+
+    `archive` is normally correct as-is, but maintenance/overlay idbs (e.g.
+    "4Dwm_655m.idb") often keep the BASE product's subsystem name
+    ("4Dwm.sw.4Dwm", so `inst` merges into the already-installed subsystem)
+    while shipping archives named after the overlay idb itself
+    ("4Dwm_655m.sw", not "4Dwm.sw"). Falls back to "<product>.<archive ext>"
+    (the extension from `archive`, the stem from the idb's own product name)
+    before giving up. Shared by `extract_product` and anything that needs to
+    predict/verify what `extract_product` will do without re-extracting
+    (e.g. `pyirix.dist.media_walker`'s validator).
+    """
+    if not archive:
+        return None
+    install_dir = Path(install_dir)
+    ap = install_dir / archive
+    if ap.is_file():
+        return ap
+    ext = archive.rsplit(".", 1)[-1]
+    fallback = install_dir / f"{product}.{ext}"
+    return fallback if fallback.is_file() else None
+
+
 def _entry_payload_len(size: int, cmpsize: int) -> int:
     """Bytes the entry's payload occupies in the .sw record. Mirrors
     extract_one's stored-vs-compressed rule: stored (cmpsize 0 or == size) uses
@@ -235,6 +281,12 @@ def extract_product(install_dir: str | Path, product: str, output_dir: str | Pat
     symlinks and directories are materialized under `output_dir` at their
     install_path. Returns `{files, links, dirs, archives, missing_archives}`.
 
+    `output_dir` is wiped and recreated first, so a re-run always reflects
+    exactly what the CURRENT code produces -- never a blend with a stale
+    tree from a previous run (e.g. a since-fixed bug that once wrote a bogus
+    file at a path the current code now correctly leaves alone; without the
+    wipe, that stale file would keep shadowing the real one forever).
+
     This is the correct multi-archive counterpart to `extract_to_dir`, which only
     reads a single `.sw`.
     """
@@ -242,7 +294,9 @@ def extract_product(install_dir: str | Path, product: str, output_dir: str | Pat
 
     install_dir = Path(install_dir)
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True)
     idb = parse_idb(str(install_dir / f"{product}.idb"))
 
     # group file entries by their owning archive
@@ -251,6 +305,13 @@ def extract_product(install_dir: str | Path, product: str, output_dir: str | Pat
     for e in idb.entries:
         if e.is_dir:
             d = output_dir / e.install_path.lstrip("/")
+            if _under_alias_symlink(d, output_dir):
+                # Reached only by resolving through a directory-alias symlink
+                # this same idb declares (e.g. "usr/lib/cron -> ../../etc/cron.d"
+                # plus "d usr/lib/cron/queuedefs") -- creating it would land
+                # inside the alias's real target and collide with the
+                # canonical entry declared there. Skip.
+                continue
             try:
                 d.mkdir(parents=True, exist_ok=True)
                 dirs += 1
@@ -260,6 +321,18 @@ def extract_product(install_dir: str | Path, product: str, output_dir: str | Pat
                 pass
         elif e.is_symlink:
             dst = output_dir / e.install_path.lstrip("/")
+            if _under_alias_symlink(dst, output_dir):
+                # The parent directory is itself a compatibility alias (e.g.
+                # "X11/Mrm -> ../Mrm"). Some idbs additionally declare
+                # per-file symlinks "inside" that alias (e.g.
+                # "X11/Mrm/MrmAppl.h -> ../Mrm/MrmAppl.h") which are entirely
+                # redundant -- reaching X11/Mrm/MrmAppl.h already resolves
+                # through the directory symlink to Mrm/MrmAppl.h. Worse,
+                # materializing one plants a SELF-REFERENTIAL symlink at
+                # Mrm/MrmAppl.h (ELOOP), permanently blocking the real file
+                # entry for that same path from ever being written in the
+                # files pass below. Skip these instead of creating them.
+                continue
             dst.parent.mkdir(parents=True, exist_ok=True)
             try:
                 if dst.is_symlink() or dst.exists():
@@ -277,10 +350,11 @@ def extract_product(install_dir: str | Path, product: str, output_dir: str | Pat
     for archive, entries in by_archive.items():
         if archive.endswith(".man") and not include_man:
             continue
-        ap = install_dir / archive
-        if not ap.exists():
-            missing.append(archive)
+        ap = resolve_archive(install_dir, product, archive)
+        if ap is None:
+            missing.append(archive if archive else "<unresolved: entry with no subsystem>")
             continue
+        archive = ap.name
         sw_bytes = ap.read_bytes()
         archives_used.append(archive)
         # Some inst products (notably the high-end Onyx/InfiniteReality demo
@@ -290,10 +364,41 @@ def extract_product(install_dir: str | Path, product: str, output_dir: str | Pat
         if entries and all(e.offset == 0 for e in entries):
             _reconstruct_offsets(sw_bytes, entries)
         for e in entries:
-            content = extract_one(sw_bytes, e)
             rel = e.install_path.lstrip("/")
             dst = output_dir / rel
+            if e.size == 0:
+                # Some freeware/GNU-tar-derived idbs carry the tar archive's own
+                # directory-self-member through as a zero-byte "f" entry whose
+                # install_path IS a directory's own path -- with a trailing
+                # slash ("apache/share/icons/small/"), bare and WITHOUT any
+                # companion "d" entry ("freeware/relnotes" -- this "f" is the
+                # ONLY declaration of that path), or a "./" self-reference
+                # ("onlineHelp/./Help.map", "xdaliclock/."). These carry no
+                # real content. Writing an empty regular file at that path
+                # would either collide with a directory/symlink another entry
+                # placed there, or (when there's no separate "d" entry) BECOME
+                # a file occupying the path real children need as their
+                # parent directory -- either way permanently blocking every
+                # real file underneath it. Skip unconditionally; the real
+                # directory still gets created normally, by an explicit "d"
+                # entry if there is one, or implicitly via a child's own
+                # dst.parent.mkdir(parents=True) if there isn't.
+                continue
+            content = extract_one(sw_bytes, e)
             try:
+                if dst.is_symlink():
+                    # A real (non-zero-size) file entry always wins over a
+                    # symlink some OTHER entry declared at this exact
+                    # install_path (e.g. gnat_dev ships BOTH "f .../gnatkr"
+                    # and "l .../gnatkr -> .../gnatwrap" -- alternate/
+                    # superseded subsystem variants real inst's conflict
+                    # resolution would pick between). Since dirs+symlinks are
+                    # all materialized before any file content is written,
+                    # the symlink would otherwise "win" the position and this
+                    # file's real bytes would silently write through it,
+                    # landing on/corrupting the symlink's target instead of
+                    # ever appearing at this file's own declared path.
+                    dst.unlink()
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 with open(dst, "wb") as g:
                     g.write(content)
