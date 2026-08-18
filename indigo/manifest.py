@@ -138,6 +138,18 @@ MANIFEST: tuple[ManifestEntry, ...] = (
              "out, same tree-import policy as e.g. iconcatalog.",
     ),
     ManifestEntry(
+        name="toolchest-config",
+        prefix="usr/lib/X11/system.chestrc",
+        products=("desktop_eoe.sw.toolchest",),
+        min_count=1, count_kind="files", required=False,
+        note="the toolchest's own menu-tree config (parsed at runtime by "
+             "indigo-session's toolchest, distinct from the app-defaults "
+             "Toolchest X resources); absent entirely from the manifest "
+             "meant the toolchest silently had nothing to display. Single "
+             "file, sibling of system.backgrounds/rgb.txt under usr/lib/X11 "
+             "— same single-file-prefix pattern.",
+    ),
+    ManifestEntry(
         name="granite-bitmap",
         prefix="usr/include/X11/bitmaps/granite",
         products=("x_eoe.sw.eoe",),
