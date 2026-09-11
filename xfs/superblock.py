@@ -75,9 +75,14 @@ def zero_log(f, part_offset, sb):
     if logstart == 0 or logblocks == 0:
         return  # external log or no log
 
-    from pyirix.xfs.ondisk import fsblock_to_offset
-
-    log_offset = fsblock_to_offset(sb, part_offset, logstart)
+    # sb_logstart is an ABSOLUTE (linear) filesystem block, not an AG-encoded
+    # one: the AG superblocks sit at linear n*agblocks and are readable there.
+    # fsblock_to_offset() implements the AG-encoded convention that inode
+    # extent startblocks use, so passing a linear value to it lands thousands
+    # of blocks early -- in this image 524292 decoded to 507652, which zeroed
+    # 4MB of live AG4 metadata instead of the log and made the disk fail at
+    # root mount (see progress_notes/o2_qemu/44-xfs-writer-zero-log-corruption.md).
+    log_offset = part_offset + logstart * blocksize
     log_size = logblocks * blocksize
 
     # Write zeros in 64KB chunks

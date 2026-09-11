@@ -177,16 +177,41 @@ def _update_inobt_rec(f, part_offset, sb, agno, agi, rec):
         cur.update_rec(new_rec)
 
 
+def free_inode_bytes(sb):
+    """The on-disk form of a FREE inode.
+
+    Real IRIX/XFS does NOT leave a free inode as zeros: it carries the ``IN``
+    magic with mode 0, version 1, format EXTENTS, and ``di_next_unlinked =
+    NULLAGINO``.  Verified against the golden image, whose 207 free slots all
+    carry exactly ``494e 0000 01 02 ... ffffffff``.
+
+    Writing zeros instead leaves free slots whose magic is 0, which shows up as
+    ``scan_inode_magic(...)['bad_free']``.  This is a FIDELITY fix: it removes
+    that deviation, but it was measured NOT to be the cause of the root-mount
+    panic that `_alloc_new_chunk` was suspected of (an image with the corrected
+    free-inode form still failed to mount).  Do not treat `bad_free` as a
+    corruption signal -- `bad_alloc` is the field that means "an ALLOCATED
+    inode is uninitialised".
+    """
+    inodesize = sb['sb_inodesize']
+    buf = bytearray(inodesize)
+    buf[0:2] = b'IN'          # di_magic
+    buf[2:4] = (0).to_bytes(2, 'big')          # di_mode = 0
+    buf[4] = 1                                 # di_version
+    buf[5] = 2                                 # di_format = EXTENTS
+    buf[96:100] = (0xFFFFFFFF).to_bytes(4, 'big')   # di_next_unlinked = NULLAGINO
+    return bytes(buf)
+
+
 def _zero_inode(f, part_offset, sb, agno, agino):
-    """Zero an on-disk inode."""
+    """Return an on-disk inode to the FREE form (not all-zeros)."""
     from pyirix.xfs.ondisk import ino_to_offset, agino_to_ino
 
     full_ino = agino_to_ino(sb, agno, agino)
     offset = ino_to_offset(sb, full_ino, part_offset)
-    inodesize = sb['sb_inodesize']
 
     f.seek(offset)
-    f.write(b'\x00' * inodesize)
+    f.write(free_inode_bytes(sb))
     f.flush()
 
 
@@ -211,11 +236,27 @@ def _alloc_new_chunk(f, part_offset, sb):
         except XFSNoSpaceError:
             continue
 
-        # Zero the allocated blocks
+        # An inode chunk must start on a 32-inode boundary, i.e. an EVEN
+        # block number when a chunk spans 4 blocks at 16 inodes/block.
+        # Measured against the golden: across all 178 chunks in all 8 AGs the
+        # chunk start block is only ever agbno % 4 == 0 (94x) or == 2 (84x) --
+        # residue 3 and 1 never occur.  An earlier attempt to require % 4 == 0
+        # was wrong (the golden has 84 chunks at residue 2).  Allocating at
+        # residue 3 (this happened: agbno=20819) produced an inobt record IRIX
+        # rejects at mount -- "Fatal error on root filesystem".
+        if agbno % 2:
+            if 1 + chunk_blocks > count:
+                continue        # aligned range does not fit in this extent
+            agbno += 1
+
+        # Initialise the allocated chunk.  Do NOT write zeros: every slot gets
+        # the free-inode form ("IN" magic, NULLAGINO), because IRIX validates
+        # inode magic across the inobt at mount.  The first inode is then
+        # allocated normally by the caller.
         ag_offset = part_offset + ag * sb['sb_agblocks'] * blocksize
         disk_off = ag_offset + agbno * blocksize
         f.seek(disk_off)
-        f.write(b'\x00' * (chunk_blocks * blocksize))
+        f.write(free_inode_bytes(sb) * (chunk_blocks * blocksize // inodesize))
         f.flush()
 
         # Create inobt record — all 64 inodes free except the first one we'll allocate
