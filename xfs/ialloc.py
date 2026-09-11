@@ -215,6 +215,38 @@ def _zero_inode(f, part_offset, sb, agno, agino):
     f.flush()
 
 
+def _chunk_candidate_even(f, part_offset, sb, agno, chunk_blocks):
+    """Would ``alloc_block``'s candidate in this AG land on an even block?
+
+    ``alloc_block`` uses largest-fit (the first cntbt record with
+    ``ar_blockcount >= count``), so probing that same record predicts exactly
+    which block it will return.  This exists so the caller can DECIDE before
+    allocating: the previous code allocated first and then ``continue``d on an
+    odd candidate, but by then the extent was already removed from the free
+    trees and ``agf_freeblks`` decremented, so every rejected candidate leaked
+    its blocks into no btree at all (measured on the O2 furniture injection:
+    AG1 lost blocks 2825-2828, AG2 lost 1267-1270, both orphaned).
+    """
+    from pyirix.xfs.alloc import read_agf, _cnt_cursor_proper
+    from pyirix.xfs.ondisk import parse_alloc_rec
+
+    agf = read_agf(f, part_offset, sb, agno)
+    if agf is None or agf['agf_freeblks'] < chunk_blocks:
+        return False
+
+    cur = _cnt_cursor_proper(f, part_offset, sb, agno, agf)
+    if not cur.lookup_ge(struct.pack('>I', chunk_blocks)):
+        return False
+    rec = cur.get_rec()
+    if rec is None:
+        return False
+
+    start, count = parse_alloc_rec(rec)
+    if count < chunk_blocks:
+        return False
+    return start % 2 == 0
+
+
 def _alloc_new_chunk(f, part_offset, sb):
     """Allocate a new 64-inode chunk when all existing chunks are full.
 
@@ -231,23 +263,31 @@ def _alloc_new_chunk(f, part_offset, sb):
     agcount = sb['sb_agcount']
 
     for agno in range(agcount):
+        # An inode chunk must start on a 32-inode boundary, i.e. an EVEN block
+        # number when a chunk spans 4 blocks at 16 inodes/block.  Measured
+        # against the golden: across all 178 chunks in all 8 AGs the chunk
+        # start block is only ever agbno % 4 == 0 (94x) or == 2 (84x) --
+        # residues 1 and 3 never occur.  An earlier attempt to require
+        # % 4 == 0 was wrong (the golden has 84 chunks at residue 2).
+        #
+        # Decide BEFORE allocating.  The previous form allocated first and
+        # then `continue`d on an odd candidate -- but `alloc_block` has by then
+        # already removed the extent from the bnobt/cntbt and decremented
+        # agf_freeblks, and nothing frees it on the way out, so the blocks
+        # leaked into no btree at all (measured: AG1 blk 2825-2828 and AG2 blk
+        # 1267-1270 orphaned by the O2 furniture injection).  The old `agbno +=
+        # 1` alignment branch was additionally dead code: its guard tested
+        # `1 + chunk_blocks > count`, and `alloc_block` returns `count` equal
+        # to the requested count, so the guard was always true for the 4-block
+        # chunk and the branch never ran.
+        if not _chunk_candidate_even(f, part_offset, sb, agno, chunk_blocks):
+            continue
+
         try:
             ag, agbno, count = alloc_block(f, part_offset, sb, chunk_blocks, agno=agno)
         except XFSNoSpaceError:
             continue
-
-        # An inode chunk must start on a 32-inode boundary, i.e. an EVEN
-        # block number when a chunk spans 4 blocks at 16 inodes/block.
-        # Measured against the golden: across all 178 chunks in all 8 AGs the
-        # chunk start block is only ever agbno % 4 == 0 (94x) or == 2 (84x) --
-        # residue 3 and 1 never occur.  An earlier attempt to require % 4 == 0
-        # was wrong (the golden has 84 chunks at residue 2).  Allocating at
-        # residue 3 (this happened: agbno=20819) produced an inobt record IRIX
-        # rejects at mount -- "Fatal error on root filesystem".
-        if agbno % 2:
-            if 1 + chunk_blocks > count:
-                continue        # aligned range does not fit in this extent
-            agbno += 1
+        assert agbno % 2 == 0, f"alloc_block returned odd agbno {agbno} in AG{agno}"
 
         # Initialise the allocated chunk.  Do NOT write zeros: every slot gets
         # the free-inode form ("IN" magic, NULLAGINO), because IRIX validates
