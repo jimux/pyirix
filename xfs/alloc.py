@@ -148,19 +148,33 @@ def alloc_block(f, part_offset, sb, count, agno=None):
         if agf['agf_freeblks'] < count:
             continue
 
-        # Search cntbt for extent >= count
+        # Choose an extent.  The cntbt is keyed by blockcount ascending, so
+        # lookup_ge(count) is best-fit and lands on an EXACT FIT whenever one
+        # exists -- and the exact-fit case is the one that must delete a record,
+        # which is the form that panics on AG0 (note 46 sections 7ay/7az).
+        #
+        # So prefer a LARGER extent first: lookup_ge(count+1) returns the first
+        # record with blockcount > count, which always takes the in-place shrink
+        # path.  Fall back to the exact fit only when no larger extent exists in
+        # this AG.
+        ar_startblock = ar_blockcount = None
         cnt_cur = _cnt_cursor_proper(f, part_offset, sb, ag, agf)
-        if not cnt_cur.lookup_ge(struct.pack('>I', count)):
-            continue
-
-        rec = cnt_cur.get_rec()
-        if rec is None:
-            continue
-
-        ar_startblock, ar_blockcount = parse_alloc_rec(rec)
-
-        if ar_blockcount < count:
-            continue
+        if cnt_cur.lookup_ge(struct.pack('>I', count + 1)):
+            rec = cnt_cur.get_rec()
+            if rec is not None:
+                ar_startblock, ar_blockcount = parse_alloc_rec(rec)
+                if ar_blockcount <= count:
+                    ar_startblock = ar_blockcount = None
+        if ar_startblock is None:
+            cnt_cur = _cnt_cursor_proper(f, part_offset, sb, ag, agf)
+            if not cnt_cur.lookup_ge(struct.pack('>I', count)):
+                continue
+            rec = cnt_cur.get_rec()
+            if rec is None:
+                continue
+            ar_startblock, ar_blockcount = parse_alloc_rec(rec)
+            if ar_blockcount < count:
+                continue
 
         # Found a suitable extent -- take `count` blocks from its front.
         #
@@ -340,8 +354,22 @@ def _shrink_free_extent(f, part_offset, sb, agno, agf,
     def _btree_alloc(agno_):
         raise XFSNoSpaceError("B+tree split during shrink -- not implemented")
 
+    # The cntbt orders by (blockcount, startblock), but insert_rec positions the
+    # cursor by the 4-byte blockcount key alone -- so with any existing record of
+    # the same count, lookup_ge lands before the whole count-run and the record
+    # is inserted out of order.  Walk forward to the first record that is NOT
+    # (same count, smaller start) so ties break on startblock.
     cnt_cur = _cnt_cursor_proper(f, part_offset, sb, agno, agf)
     cnt_cur.lookup_ge(struct.pack('>I', new_count))
+    while True:
+        rec = cnt_cur.get_rec()
+        if rec is None:
+            break
+        s, c = parse_alloc_rec(rec)
+        if c != new_count or s >= new_start:
+            break
+        if not cnt_cur.increment():
+            break
     cnt_cur.insert_rec(pack_alloc_rec(new_start, new_count), alloc_fn=_btree_alloc)
 
 
