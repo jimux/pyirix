@@ -162,14 +162,32 @@ def alloc_block(f, part_offset, sb, count, agno=None):
         if ar_blockcount < count:
             continue
 
-        # Found a suitable extent — remove/shrink it
-        _remove_free_extent(f, part_offset, sb, ag, agf, ar_startblock, ar_blockcount)
-
-        # If extent is larger than needed, put remainder back
+        # Found a suitable extent -- take `count` blocks from its front.
+        #
+        # When the extent is LARGER than the request we SHRINK IT IN PLACE
+        # (rewrite the one record) rather than delete-then-re-add.  Measured on
+        # the O2 furniture injection (note 46 sections 7an/7ar): presenting an
+        # IRIX-V1 free-space btree leaf with a DECREMENTED bb_numrecs is fatal
+        # -- `PANIC: Fatal error on root filesystem`, 3/3 -- while the same
+        # content expressed by an in-place record update boots 3/3.  Both were
+        # verified internally consistent and correctly ordered, and a full
+        # field sweep of every AGF/superblock field and every tree property
+        # showed bb_numrecs to be the sole measurable difference.
+        #
+        # NOTE the exact-fit case below still removes a record and therefore
+        # still hits that fatal form -- it is a KNOWN LIMIT, not worked around.
         if ar_blockcount > count:
-            remainder_start = ar_startblock + count
-            remainder_count = ar_blockcount - count
-            _add_free_extent(f, part_offset, sb, ag, agf, remainder_start, remainder_count)
+            _shrink_free_extent(f, part_offset, sb, ag, agf,
+                                ar_startblock, ar_blockcount,
+                                ar_startblock + count, ar_blockcount - count)
+        else:
+            # Exact fit: the whole extent is taken, so there is no remainder to
+            # put back and the record must go.  NOTE: real XFS removes btree
+            # records routinely, so this is NOT inherently a fatal form --
+            # whatever IRIX rejects about our delete is something else, still
+            # unidentified (see note 46 section 7ar).
+            _remove_free_extent(f, part_offset, sb, ag, agf,
+                                ar_startblock, ar_blockcount)
 
         # Update AGF counters
         agf['agf_freeblks'] -= count
@@ -180,6 +198,12 @@ def alloc_block(f, part_offset, sb, count, agno=None):
 
         # Update superblock
         sb['sb_fdblocks'] -= count
+
+        # Post-condition: the trees and counters must agree.  Asserted after the
+        # counters are updated (an earlier placement compared a new tree against
+        # a stale counter and fired spuriously).  This whole line of work turned
+        # on a writer that checked its own output rather than its post-conditions.
+        _verify_free_space_consistent(f, part_offset, sb, ag, agf)
 
         return (ag, ar_startblock, count)
 
@@ -270,6 +294,74 @@ def alloc_blocks_for_file(f, part_offset, sb, count, agno=None):
         remaining -= got
 
     return allocations
+
+
+def _shrink_free_extent(f, part_offset, sb, agno, agf,
+                        old_start, old_count, new_start, new_count):
+    """Replace ONE free-extent record with a shorter one, in both btrees.
+
+    An in-place record update: `bb_numrecs` is NOT touched, so the leaf keeps
+    the shape IRIX accepts (see the note in `alloc_block`).  The record may
+    also MOVE in the cntbt, which is keyed by (blockcount, startblock), so the
+    update is expressed as "locate the old record, delete it, re-insert the new
+    one" -- but expressed in place, never leaving the tree with a reduced
+    count.  The bnobt is keyed by startblock alone, so shortening an extent
+    never moves its position there.
+    """
+    # bnobt: key is startblock, which does not change when we shorten from the
+    # tail -- so the record stays at its index.  Update it where it sits.
+    bno_cur = _bno_cursor(f, part_offset, sb, agno, agf)
+    if not bno_cur.lookup_eq(struct.pack('>I', old_start)):
+        raise XFSCorruptionError(
+            f"bnobt: no record for extent start {old_start} (AG{agno})")
+    bno_cur.update_rec(pack_alloc_rec(new_start, new_count))
+
+    # cntbt: keyed by (blockcount, startblock).  Remove the old record and
+    # insert the new one, keeping the count unchanged overall.
+    cnt_cur = _cnt_cursor_proper(f, part_offset, sb, agno, agf)
+    if not cnt_cur.lookup_ge(struct.pack('>I', old_count)):
+        raise XFSCorruptionError(
+            f"cntbt: no record at count {old_count} (AG{agno})")
+    while True:
+        rec = cnt_cur.get_rec()
+        if rec is None:
+            raise XFSCorruptionError("cntbt: exhausted while seeking extent")
+        s, c = parse_alloc_rec(rec)
+        if c != old_count:
+            raise XFSCorruptionError(
+                f"cntbt: extent ({old_start},{old_count}) not found (AG{agno})")
+        if s == old_start:
+            cnt_cur.delete_rec()
+            break
+        if not cnt_cur.increment():
+            raise XFSCorruptionError(
+                f"cntbt: extent ({old_start},{old_count}) not found (AG{agno})")
+
+    def _btree_alloc(agno_):
+        raise XFSNoSpaceError("B+tree split during shrink -- not implemented")
+
+    cnt_cur = _cnt_cursor_proper(f, part_offset, sb, agno, agf)
+    cnt_cur.lookup_ge(struct.pack('>I', new_count))
+    cnt_cur.insert_rec(pack_alloc_rec(new_start, new_count), alloc_fn=_btree_alloc)
+
+
+def _verify_free_space_consistent(f, part_offset, sb, agno, agf, bno_cur=None):
+    """Refuse to leave the AG in a state our own checks would reject."""
+    b = [parse_alloc_rec(r) for r in _bno_cursor(f, part_offset, sb, agno, agf).walk_all()]
+    c = [parse_alloc_rec(r) for r in _cnt_cursor_proper(f, part_offset, sb, agno, agf).walk_all()]
+    problems = []
+    if set(b) != set(c):
+        problems.append("bnobt/cntbt sets differ")
+    if b != sorted(b, key=lambda r: r[0]):
+        problems.append("bnobt unsorted")
+    if c != sorted(c, key=lambda r: (r[1], r[0])):
+        problems.append("cntbt unsorted")
+    if sum(n for _s, n in c) != agf['agf_freeblks']:
+        problems.append(
+            f"agf_freeblks {agf['agf_freeblks']} != sum(cntbt) {sum(n for _s, n in c)}")
+    if problems:
+        raise XFSCorruptionError(
+            f"AG{agno} free space inconsistent after edit: {'; '.join(problems)}")
 
 
 def _remove_free_extent(f, part_offset, sb, agno, agf, startblock, blockcount):
