@@ -9,7 +9,7 @@ from pyirix.xfs.constants import (
     XFS_SB_MAGIC, XFS_SB_VERSION_4, XFS_SB_VERSION_OKSASHBITS,
     XFSCorruptionError,
 )
-from pyirix.xfs.ondisk import parse_superblock, pack_superblock
+from pyirix.xfs.ondisk import parse_superblock, pack_superblock, fsblock_to_offset
 
 
 def read_superblock(f, part_offset):
@@ -75,14 +75,15 @@ def zero_log(f, part_offset, sb):
     if logstart == 0 or logblocks == 0:
         return  # external log or no log
 
-    # sb_logstart is an ABSOLUTE (linear) filesystem block, not an AG-encoded
-    # one: the AG superblocks sit at linear n*agblocks and are readable there.
-    # fsblock_to_offset() implements the AG-encoded convention that inode
-    # extent startblocks use, so passing a linear value to it lands thousands
-    # of blocks early -- in this image 524292 decoded to 507652, which zeroed
-    # 4MB of live AG4 metadata instead of the log and made the disk fail at
+    # sb_logstart is an fsblock, AG-encoded exactly like an inode extent's
+    # startblock: (agno << sb_agblklog) | agbno.  On the golden O2 image
+    # sb_logstart=524292=(4<<17)|4 -> the real journal is AG4 block 4, byte
+    # 0x84104000, and carries 740 0xFEEDBABE XLOG headers, while the linear
+    # offset part_offset+logstart*blocksize (0x88204000) carries 0 XLOG magics
+    # and is live AG4 content.  b5286aa got this backwards: the linear decode
+    # zeroed 4MB of live metadata and left the real journal to be replayed at
     # root mount (see progress_notes/o2_qemu/44-xfs-writer-zero-log-corruption.md).
-    log_offset = part_offset + logstart * blocksize
+    log_offset = fsblock_to_offset(sb, part_offset, logstart)
     log_size = logblocks * blocksize
 
     # Write zeros in 64KB chunks
