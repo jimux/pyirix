@@ -4,6 +4,7 @@ Read operations migrated from sgi_mcp/sgi_fs.py lines 975-1037.
 Write operations are new.
 """
 
+import copy
 import struct
 import time
 
@@ -12,6 +13,7 @@ from pyirix.xfs.constants import (
     XFS_DINODE_FMT_DEV,
     XFS_DINODE_FMT_LOCAL, XFS_DINODE_FMT_EXTENTS, XFS_DINODE_FMT_BTREE,
     XFS_DIR_LEAF_MAGIC, XFS_DIR2_BLOCK_MAGIC,
+    XFS_DIR2_MAX_SHORT_INUM,
     XFSError, XFSCorruptionError, XFSPathError,
     XFSExistsError, XFSNotEmptyError, XFSNoSpaceError,
 )
@@ -352,6 +354,12 @@ def create_file(f, part_offset, sb, path, data, mode=0o100644, uid=0, gid=0):
 
     parent_ino, basename = resolve_parent(f, part_offset, sb, path)
 
+    # Refuse BEFORE allocating: on a grown DA B+tree (or full) parent the entry
+    # cannot land, and _add_dir_entry would otherwise fail after the inode and
+    # data blocks were already spent -- an inode+blocks leak per failed file.
+    if not _can_add_dir_entry(f, part_offset, sb, parent_ino, basename):
+        raise _cannot_add(basename)
+
     # Allocate a new inode
     new_ino = alloc_inode(f, part_offset, sb)
 
@@ -422,6 +430,9 @@ def create_symlink(f, part_offset, sb, path, target, uid=0, gid=0):
             f"symlink target {len(tb)}B exceeds inline capacity {max_inline}B "
             "(extent-form symlinks not implemented)")
 
+    if not _can_add_dir_entry(f, part_offset, sb, parent_ino, basename):
+        raise _cannot_add(basename)
+
     new_ino = alloc_inode(f, part_offset, sb)
     inode = init_inode(sb, S_IFLNK | 0o777, uid=uid, gid=gid)
     inode['di_format'] = XFS_DINODE_FMT_LOCAL
@@ -453,6 +464,9 @@ def mknod(f, part_offset, sb, path, mode, rdev, uid=0, gid=0):
     if resolve_path(f, part_offset, sb, path) is not None:
         raise XFSExistsError(f"Path already exists: {path}")
     parent_ino, basename = resolve_parent(f, part_offset, sb, path)
+
+    if not _can_add_dir_entry(f, part_offset, sb, parent_ino, basename):
+        raise _cannot_add(basename)
 
     new_ino = alloc_inode(f, part_offset, sb)
     inode = init_inode(sb, mode, uid=uid, gid=gid)
@@ -519,6 +533,11 @@ def mkdir(f, part_offset, sb, path, mode=0o40755, uid=0, gid=0):
         raise XFSExistsError(f"Path already exists: {path}")
 
     parent_ino, basename = resolve_parent(f, part_offset, sb, path)
+
+    # Refuse BEFORE allocating -- see create_file.  A mkdir spends no data
+    # blocks but still leaks its inode on an unsupported parent.
+    if not _can_add_dir_entry(f, part_offset, sb, parent_ino, basename):
+        raise _cannot_add(basename)
 
     # Allocate inode
     new_ino = alloc_inode(f, part_offset, sb)
@@ -620,6 +639,134 @@ def chown(f, part_offset, sb, path, uid, gid):
 
 # ── Directory Entry Helpers ─────────────────────────────────────────
 
+_PROBE_INO = XFS_DIR2_MAX_SHORT_INUM + 1  # forces the dir2 SF 4->8 upgrade
+
+
+def _cannot_add(name):
+    """The one XFSError raised for every un-addable parent, pre-flight or real."""
+    return XFSError(
+        f"Cannot add directory entry '{name}' — directory full or unsupported format")
+
+
+class _ScratchFile:
+    """Copy-on-write view of an open file: reads see overlay writes, but
+    nothing reaches the underlying file.
+
+    Used by ``_can_add_dir_entry`` to run the REAL block-format inserter
+    against throwaway state, so the prediction cannot drift from
+    ``_add_dir_entry`` (the same routine computes both), while the image stays
+    byte-for-byte intact.
+    """
+
+    def __init__(self, f):
+        self._f = f
+        self._pos = 0
+        self._overlay = {}
+
+    def seek(self, offset, whence=0):
+        if whence == 0:
+            self._pos = offset
+        elif whence == 1:
+            self._pos += offset
+        elif whence == 2:
+            self._f.seek(0, 2)
+            self._pos = self._f.tell() + offset
+        return self._pos
+
+    def tell(self):
+        return self._pos
+
+    def read(self, n=-1):
+        self._f.seek(self._pos)
+        data = bytearray(self._f.read(n))
+        start = self._pos
+        end = start + len(data)
+        for off, chunk in self._overlay.items():
+            s = max(off, start)
+            e = min(off + len(chunk), end)
+            if s < e:
+                data[s - start:e - start] = chunk[s - off:e - off]
+        self._pos += len(data)
+        return bytes(data)
+
+    def write(self, data):
+        self._overlay[self._pos] = bytes(data)
+        self._pos += len(data)
+        return len(data)
+
+    def flush(self):
+        pass
+
+
+def _has_contiguous_free(f, part_offset, sb, nblocks):
+    """True if some AG's longest free extent can hold ``nblocks`` contiguously."""
+    from pyirix.xfs.alloc import read_agf
+
+    for agno in range(sb['sb_agcount']):
+        agf = read_agf(f, part_offset, sb, agno)
+        if agf is not None and agf.get('agf_longest', 0) >= nblocks:
+            return True
+    return False
+
+
+def _can_add_dir_entry(f, part_offset, sb, parent_ino, name):
+    """Predict whether ``_add_dir_entry`` can succeed, WITHOUT touching disk.
+
+    Mirrors ``_add_dir_entry``'s success conditions so callers can raise before
+    spending an inode and data blocks.  A ``False`` is always safe; a ``True``
+    means the subsequent real add must succeed:
+
+    - shortform parent: dry-run ``add_entry_sf`` on a deep copy.  If full, the
+      real path converts one block; report success only when an AG's longest
+      free extent can hold the block(s) the conversion needs.
+    - grown (extents/btree) parent: run the real V1-leaf/XD2B inserter against
+      a scratch overlay.  A DA B+tree node (0xFEBE) fits neither and is
+      refused, which is the measured leak (an inode/data block already spent
+      before ``_add_dir_entry`` raised).
+    """
+    parent_inode = read_inode(f, part_offset, sb, parent_ino)
+    if parent_inode is None:
+        return False
+
+    fmt = parent_inode['di_format']
+
+    if fmt == XFS_DINODE_FMT_LOCAL:
+        probe = copy.deepcopy(parent_inode)
+        if add_entry_sf(probe, sb, name, _PROBE_INO):
+            return True
+        # Shortform is full -- the real path converts to a single block (dir2
+        # dirs convert 1 << dirblklog fsblocks).  Only claim it if the space
+        # exists, so a conversion that would fail does not leak an inode.
+        nblocks = (1 << sb['sb_dirblklog']) if has_dirv2(sb) else 1
+        return _has_contiguous_free(f, part_offset, sb, nblocks)
+
+    if fmt in (XFS_DINODE_FMT_EXTENTS, XFS_DINODE_FMT_BTREE):
+        extents = get_extents(f, part_offset, sb, parent_inode)
+        if not extents:
+            return False
+
+        from pyirix.xfs.ondisk import fsblock_to_offset
+
+        _startoff, startblock, _blockcount = extents[0]
+        f.seek(fsblock_to_offset(sb, part_offset, startblock))
+        header = f.read(16)
+        if len(header) < 16:
+            return False
+        magic2 = struct.unpack('>H', header[8:10])[0]
+        magic4 = struct.unpack('>I', header[0:4])[0]
+        if magic2 != XFS_DIR_LEAF_MAGIC and magic4 != XFS_DIR2_BLOCK_MAGIC:
+            return False  # DA B+tree node or unknown format
+
+        scratch = _ScratchFile(f)
+        if magic2 == XFS_DIR_LEAF_MAGIC:
+            return bool(add_entry_v1_leaf(
+                scratch, part_offset, sb, parent_inode, name, _PROBE_INO))
+        return bool(add_entry_dir2_block(
+            scratch, part_offset, sb, parent_inode, name, _PROBE_INO))
+
+    return False
+
+
 def _add_dir_entry(f, part_offset, sb, parent_ino, name, child_ino):
     """Add a directory entry, handling format conversions."""
     parent_inode = read_inode(f, part_offset, sb, parent_ino)
@@ -676,7 +823,7 @@ def _add_dir_entry(f, part_offset, sb, parent_ino, name, child_ino):
                 if add_entry_dir2_block(f, part_offset, sb, parent_inode, name, child_ino):
                     return
 
-    raise XFSError(f"Cannot add directory entry '{name}' — directory full or unsupported format")
+    raise _cannot_add(name)
 
 
 def _remove_dir_entry(f, part_offset, sb, parent_ino, name):
