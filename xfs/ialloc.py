@@ -218,32 +218,30 @@ def _zero_inode(f, part_offset, sb, agno, agino):
 def _chunk_candidate_even(f, part_offset, sb, agno, chunk_blocks):
     """Would ``alloc_block``'s candidate in this AG land on an even block?
 
-    ``alloc_block`` uses largest-fit (the first cntbt record with
-    ``ar_blockcount >= count``), so probing that same record predicts exactly
-    which block it will return.  This exists so the caller can DECIDE before
-    allocating: the previous code allocated first and then ``continue``d on an
-    odd candidate, but by then the extent was already removed from the free
-    trees and ``agf_freeblks`` decremented, so every rejected candidate leaked
-    its blocks into no btree at all (measured on the O2 furniture injection:
-    AG1 lost blocks 2825-2828, AG2 lost 1267-1270, both orphaned).
+    This exists so the caller can DECIDE before allocating: the previous code
+    allocated first and then ``continue``d on an odd candidate, but by then the
+    extent was already removed from the free trees and ``agf_freeblks``
+    decremented, so every rejected candidate leaked its blocks into no btree at
+    all (measured on the O2 furniture injection: AG1 lost blocks 2825-2828, AG2
+    lost 1267-1270, both orphaned).
+
+    The prediction must be the allocator's REAL choice, so it calls the shared
+    ``alloc.select_free_extent`` -- the single best-fit rule (prefer
+    count+1/shrink, fall back to exact fit) -- rather than re-deriving it.
+    An earlier probe used only ``lookup_ge(count)``; when a larger extent
+    existed, ``alloc_block`` picked a different, possibly odd, record and the
+    old assertion fired after the extent was already spent.
     """
-    from pyirix.xfs.alloc import read_agf, _cnt_cursor_proper
-    from pyirix.xfs.ondisk import parse_alloc_rec
+    from pyirix.xfs.alloc import read_agf, select_free_extent
 
     agf = read_agf(f, part_offset, sb, agno)
     if agf is None or agf['agf_freeblks'] < chunk_blocks:
         return False
 
-    cur = _cnt_cursor_proper(f, part_offset, sb, agno, agf)
-    if not cur.lookup_ge(struct.pack('>I', chunk_blocks)):
+    chosen = select_free_extent(f, part_offset, sb, agno, agf, chunk_blocks)
+    if chosen is None:
         return False
-    rec = cur.get_rec()
-    if rec is None:
-        return False
-
-    start, count = parse_alloc_rec(rec)
-    if count < chunk_blocks:
-        return False
+    start, _count = chosen
     return start % 2 == 0
 
 
@@ -280,6 +278,11 @@ def _alloc_new_chunk(f, part_offset, sb):
         # `1 + chunk_blocks > count`, and `alloc_block` returns `count` equal
         # to the requested count, so the guard was always true for the 4-block
         # chunk and the branch never ran.
+        #
+        # `_chunk_candidate_even` and `alloc_block` now share one candidate
+        # rule (alloc.select_free_extent), so the prediction is exact and the
+        # former `assert agbno % 2 == 0` -- which fired only AFTER the extent
+        # was already spent -- is unreachable and has been removed.
         if not _chunk_candidate_even(f, part_offset, sb, agno, chunk_blocks):
             continue
 
@@ -287,7 +290,6 @@ def _alloc_new_chunk(f, part_offset, sb):
             ag, agbno, count = alloc_block(f, part_offset, sb, chunk_blocks, agno=agno)
         except XFSNoSpaceError:
             continue
-        assert agbno % 2 == 0, f"alloc_block returned odd agbno {agbno} in AG{agno}"
 
         # Initialise the allocated chunk.  Do NOT write zeros: every slot gets
         # the free-inode form ("IN" magic, NULLAGINO), because IRIX validates

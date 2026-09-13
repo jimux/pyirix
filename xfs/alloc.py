@@ -127,6 +127,44 @@ def _cnt_cursor_proper(f, part_offset, sb, agno, agf):
     )
 
 
+def select_free_extent(f, part_offset, sb, agno, agf, count):
+    """Pick the cntbt record ``alloc_block`` will consume from this AG.
+
+    The ONE candidate-selection rule, shared with ``ialloc`` so its inode-chunk
+    predictor cannot diverge from the allocator:
+
+      1. Prefer the first extent strictly larger than ``count`` --
+         ``lookup_ge(count + 1)``.  Taking a few blocks off its front always
+         takes the in-place-shrink path, which is the form that must be used
+         when it is available (see ``alloc_block``).
+      2. Fall back to the exact fit, ``lookup_ge(count)``, only when no larger
+         extent exists in this AG.  The exact-fit case removes a record and is
+         a KNOWN LIMIT (note 46 sections 7ay/7az); it is not a reason to avoid
+         the larger extent, only the last resort.
+
+    Returns ``(startblock, blockcount)`` or ``None`` when this AG cannot
+    satisfy ``count``.  Callers must have checked ``agf`` is readable.
+    """
+    cnt_cur = _cnt_cursor_proper(f, part_offset, sb, agno, agf)
+    if cnt_cur.lookup_ge(struct.pack('>I', count + 1)):
+        rec = cnt_cur.get_rec()
+        if rec is not None:
+            start, blockcount = parse_alloc_rec(rec)
+            if blockcount > count:
+                return start, blockcount
+
+    cnt_cur = _cnt_cursor_proper(f, part_offset, sb, agno, agf)
+    if not cnt_cur.lookup_ge(struct.pack('>I', count)):
+        return None
+    rec = cnt_cur.get_rec()
+    if rec is None:
+        return None
+    start, blockcount = parse_alloc_rec(rec)
+    if blockcount < count:
+        return None
+    return start, blockcount
+
+
 def alloc_block(f, part_offset, sb, count, agno=None):
     """Allocate contiguous blocks from an AG.
 
@@ -148,33 +186,13 @@ def alloc_block(f, part_offset, sb, count, agno=None):
         if agf['agf_freeblks'] < count:
             continue
 
-        # Choose an extent.  The cntbt is keyed by blockcount ascending, so
-        # lookup_ge(count) is best-fit and lands on an EXACT FIT whenever one
-        # exists -- and the exact-fit case is the one that must delete a record,
-        # which is the form that panics on AG0 (note 46 sections 7ay/7az).
-        #
-        # So prefer a LARGER extent first: lookup_ge(count+1) returns the first
-        # record with blockcount > count, which always takes the in-place shrink
-        # path.  Fall back to the exact fit only when no larger extent exists in
-        # this AG.
-        ar_startblock = ar_blockcount = None
-        cnt_cur = _cnt_cursor_proper(f, part_offset, sb, ag, agf)
-        if cnt_cur.lookup_ge(struct.pack('>I', count + 1)):
-            rec = cnt_cur.get_rec()
-            if rec is not None:
-                ar_startblock, ar_blockcount = parse_alloc_rec(rec)
-                if ar_blockcount <= count:
-                    ar_startblock = ar_blockcount = None
-        if ar_startblock is None:
-            cnt_cur = _cnt_cursor_proper(f, part_offset, sb, ag, agf)
-            if not cnt_cur.lookup_ge(struct.pack('>I', count)):
-                continue
-            rec = cnt_cur.get_rec()
-            if rec is None:
-                continue
-            ar_startblock, ar_blockcount = parse_alloc_rec(rec)
-            if ar_blockcount < count:
-                continue
+        # Choose an extent -- the documented best-fit rule lives in ONE place so
+        # the inode-chunk predictor in ialloc cannot guess differently (see
+        # select_free_extent: prefer count+1 / shrink, fall back to exact fit).
+        chosen = select_free_extent(f, part_offset, sb, ag, agf, count)
+        if chosen is None:
+            continue
+        ar_startblock, ar_blockcount = chosen
 
         # Found a suitable extent -- take `count` blocks from its front.
         #
