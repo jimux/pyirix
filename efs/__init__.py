@@ -16,6 +16,10 @@ from pyirix.efs.builder import (
     build_volume_header,
     mkfs_efs,
 )
+
+# Host directory/tar -> EFS images live in pyirix.efs.media; imported lazily by
+# callers (from pyirix.efs.media import ...) so ``python -m pyirix.efs.media``
+# does not re-import an already-loaded submodule.
 from pyirix.efs.repair import (
     check_efs,
     verify_checksum,
