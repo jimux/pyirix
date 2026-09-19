@@ -19,6 +19,11 @@ import json
 import bisect
 import subprocess
 
+try:
+    from .toolchain import resolve_gdb
+except ImportError:  # run as a bare script
+    from toolchain import resolve_gdb
+
 # WARNING: ip54_kernel_symbols_disk.json is STALE vs the golden kernel — every
 # address is off (splx, idev*, qcntl* all wrong), which makes gdb breakpoints
 # silently hit WRONG addresses.  ip54_kernel_symbols_golden.json is regenerated
@@ -138,7 +143,7 @@ class GuestGDB:
         with open(cmdfile, "w") as f:
             f.write("\n".join(cmds))
         try:
-            r = subprocess.run(["gdb-multiarch", "-nx", "-batch", "-x", cmdfile],
+            r = subprocess.run([resolve_gdb(), "-nx", "-batch", "-x", cmdfile],
                                capture_output=True, text=True, timeout=timeout)
             out, err = r.stdout, r.stderr
         except subprocess.TimeoutExpired as e:
@@ -172,7 +177,7 @@ class GuestGDB:
         with open(cmdfile, "w") as f:
             f.write("\n".join(cmds))
         try:
-            r = subprocess.run(["gdb-multiarch", "-nx", "-batch", "-x", cmdfile],
+            r = subprocess.run([resolve_gdb(), "-nx", "-batch", "-x", cmdfile],
                                capture_output=True, text=True, timeout=timeout)
             out, err = r.stdout, r.stderr
         except subprocess.TimeoutExpired as e:
@@ -193,7 +198,7 @@ class GuestGDB:
         ]
         with open(cmdfile, "w") as f:
             f.write("\n".join(cmds))
-        r = subprocess.run(["gdb-multiarch", "-nx", "-batch", "-x", cmdfile],
+        r = subprocess.run([resolve_gdb(), "-nx", "-batch", "-x", cmdfile],
                            capture_output=True, text=True, timeout=timeout)
         return r.stdout
 

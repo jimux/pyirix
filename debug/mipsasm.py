@@ -11,9 +11,9 @@ Pipeline (matches the C3 spec):
     mips-elf-objcopy -O binary t.o t.bin
     unpack big-endian u32 words from t.bin
 
-The cross toolchain lives in the docker dev container (/opt/cross/mips-elf/bin). This
-script auto-detects whether it is already inside the container; if not, it re-runs the
-assemble step via `docker compose exec -T dev`.
+The bare-metal MIPS cross-toolchain is auto-detected via :mod:`toolchain`
+(~/cross/mips-elf/bin or /opt/cross/mips-elf/bin); if it is not on this host,
+the assemble step is re-run via `docker compose exec -T dev`.
 
 Usage:
     # from a .s file, emit C `p[i] =` assignments ready to paste into a trampoline
@@ -35,21 +35,27 @@ import struct
 import subprocess
 import tempfile
 
+try:
+    from .toolchain import find_mips_tool
+except ImportError:  # run as a bare script (e.g. inside the dev container)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from toolchain import find_mips_tool
+
 MARCH = "mips3"
 ABI = "32"
 ENDIAN = "EB"          # big-endian (SGI)
 GVAL = "0"             # -G 0: no small-data / GP-relative
-CROSS = "/opt/cross/mips-elf/bin"
-AS = f"{CROSS}/mips-elf-as"
-OBJCOPY = f"{CROSS}/mips-elf-objcopy"
+AS = find_mips_tool("as")
+OBJCOPY = find_mips_tool("objcopy")
 
 
-def _in_container() -> bool:
-    return os.path.exists("/opt/cross/mips-elf/bin/mips-elf-as")
+def _have_local_toolchain() -> bool:
+    """True when this host (or container) has a usable MIPS as+objcopy."""
+    return bool(AS and OBJCOPY)
 
 
 def _assemble_in_container(asm_text: str, march: str, abi: str, endian: str, gval: str) -> bytes:
-    """Run as+objcopy locally (we are inside the dev container). Returns the raw .text bytes."""
+    """Run the resolved as+objcopy locally. Returns the raw .text bytes."""
     with tempfile.TemporaryDirectory() as d:
         s = os.path.join(d, "t.s")
         o = os.path.join(d, "t.o")
@@ -103,7 +109,7 @@ def _assemble_via_docker(asm_text: str, march: str, abi: str, endian: str, gval:
 def assemble(asm_text: str, march: str = MARCH, abi: str = ABI,
              endian: str = ENDIAN, gval: str = GVAL):
     """Assemble MIPS source and return a list of big-endian 32-bit instruction words."""
-    raw = (_assemble_in_container if _in_container() else _assemble_via_docker)(
+    raw = (_assemble_in_container if _have_local_toolchain() else _assemble_via_docker)(
         asm_text, march, abi, endian, gval)
     if len(raw) % 4:
         raise RuntimeError(f"assembled .text is {len(raw)} bytes, not word-aligned")
