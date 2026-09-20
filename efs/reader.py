@@ -97,20 +97,43 @@ def read_vh(f):
     return vh
 
 
+def _has_efs_magic(f, part_offset):
+    """True if the EFS superblock magic is present at block 1 of the partition."""
+    f.seek(part_offset + EFS_BLOCK_SIZE)
+    sb_data = f.read(32)
+    if len(sb_data) < 32:
+        return False
+    return struct.unpack('>I', sb_data[28:32])[0] in (EFS_MAGIC, EFS_MAGIC_NEW)
+
+
 def find_efs_partition(f):
     """Find the EFS partition in a disk image.
 
     Returns (partition_byte_offset, partition_size_bytes) or None.
-    Searches for partition type 7 (EFS) or 5 (sysv), matching efsextract.
+    Prefers partition type 7 (EFS) / 5 (sysv), then any other partition, and
+    validates the EFS superblock magic so a wrong/RAW type never yields a false
+    positive.
     """
     vh = read_vh(f)
     if vh:
-        # Look for EFS (type 7) or sysv (type 5) partition
-        for i, pt in enumerate(vh['pt']):
-            if pt['type'] in (PTYPE_EFS, PTYPE_SYSV) and pt['nblks'] > 0:
-                offset = pt['firstlbn'] * SECTOR_SIZE
-                size = pt['nblks'] * SECTOR_SIZE
-                return offset, size
+        # Prefer declared EFS (type 7) / sysv (type 5) partitions, then any
+        # other partition, but validate the EFS superblock magic before
+        # trusting one — a filesystem can be stored under a RAW/mislabeled
+        # type, and a type match alone can point at a non-EFS (or empty) one.
+        parts = [pt for pt in vh['pt'] if pt.get('nblks', 0) > 0]
+        matched = [pt for pt in parts if pt['type'] in (PTYPE_EFS, PTYPE_SYSV)]
+        rest = [pt for pt in parts if pt['type'] not in (PTYPE_EFS, PTYPE_SYSV)]
+        for pt in matched + rest:
+            offset = pt['firstlbn'] * SECTOR_SIZE
+            if _has_efs_magic(f, offset):
+                return offset, pt['nblks'] * SECTOR_SIZE
+        # No valid EFS superblock anywhere — fall back to a declared-type
+        # partition so repair/check paths can still locate a corrupt filesystem
+        # (a type match is better than nothing when the magic itself is broken).
+        # XFS discovery is deliberately stricter and returns None here.
+        if matched:
+            pt = matched[0]
+            return pt['firstlbn'] * SECTOR_SIZE, pt['nblks'] * SECTOR_SIZE
         return None
 
     # No volume header — check if it's a raw EFS image

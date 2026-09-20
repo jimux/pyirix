@@ -124,7 +124,12 @@ def read_vh(f):
 
 
 def find_partition(f, ptype_wanted):
-    """Find a partition by type. Returns (byte_offset, byte_size) or None."""
+    """Find a partition by its volume-header *type* only (no magic validation).
+
+    Kept for callers that genuinely want the declared type. Filesystem
+    discovery must use find_xfs_partition, which validates the on-disk
+    superblock before trusting a partition.
+    """
     vh = read_vh(f)
     if not vh:
         return None
@@ -134,9 +139,37 @@ def find_partition(f, ptype_wanted):
     return None
 
 
+def _has_xfs_magic(f, pt):
+    """True if the 'XFSB' superblock magic is present at sector 0 of this partition."""
+    if pt['nblks'] <= 0:
+        return False
+    f.seek(pt['firstlbn'] * SECTOR_SIZE)
+    data = f.read(4)
+    if len(data) < 4:
+        return False
+    return struct.unpack('>I', data[0:4])[0] == XFS_SB_MAGIC
+
+
 def find_xfs_partition(f):
-    """Find the XFS partition. Returns (byte_offset, byte_size) or None."""
-    return find_partition(f, PTYPE_XFS)
+    """Find the XFS partition, validated by superblock magic.
+
+    Prefer the partition whose declared type is XFS, but validate the 'XFSB'
+    magic there and fall back to scanning every other partition. Some disks
+    (e.g. an IP20 miniroot image) keep their real XFS under a RAW type while an
+    XFS-typed partition is empty; returning the first type match then yields a
+    bogus "corrupt filesystem" verdict. Never returns an unvalidated candidate.
+    Returns (byte_offset, byte_size), or None.
+    """
+    vh = read_vh(f)
+    if not vh:
+        return None
+    parts = [pt for pt in vh['pt'] if pt.get('nblks', 0) > 0]
+    matched = [pt for pt in parts if pt['type'] == PTYPE_XFS]
+    rest = [pt for pt in parts if pt['type'] != PTYPE_XFS]
+    for pt in matched + rest:
+        if _has_xfs_magic(f, pt):
+            return (pt['firstlbn'] * SECTOR_SIZE, pt['nblks'] * SECTOR_SIZE)
+    return None
 
 
 def detect_filesystem(f, part_offset):
