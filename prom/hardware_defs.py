@@ -131,8 +131,8 @@ HPC3_REGISTERS = [
     RegisterDef("SCSI0_REGS", 0x40000, 0x8000, "RW", "SCSI0 Controller (WD33C93B)"),
     RegisterDef("SCSI1_REGS", 0x48000, 0x8000, "RW", "SCSI1 Controller (WD33C93B)"),
 
-    # Ethernet chip (SEEQ 80C03)
-    RegisterDef("ENET_REGS", 0x54000, 0x500, "RW", "Ethernet Controller (SEEQ 80C03)"),
+    # Ethernet chip (SEEQ 8003)
+    RegisterDef("ENET_REGS", 0x54000, 0x500, "RW", "Ethernet Controller (SEEQ 8003)"),
 
     # PIO
     RegisterDef("PIO_DATA", 0x58000, 0x4000, "RW", "PIO Data Channels"),
