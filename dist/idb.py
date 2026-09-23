@@ -20,18 +20,36 @@ First token is the file type:
     b/c block/char device
     h   hardlink (target appears later)
     n   "no-extract" — directory shells already existing on the system
+    X   exclusion/placeholder entry (newer idbs, e.g. IRIX 6.5.22): no
+        size/off/cmpsize payload; marks a file the newer installer excludes
+        (e.g. a Voyager-only screensaver default).  **inst 3.7 (IRIX 6.5.5)
+        cannot parse filetype X at all** — it errors on the line and silently
+        drops the WHOLE product (seen on desktop_eoe_6522m, dev_6522m,
+        dmedia_dev_6522m), so a 6.5.22 overlay cannot be installed with the
+        resident 6.5.5 inst unless these lines are stripped.  Parsing (not
+        dropping) them here keeps the file list honest.
 
 This parser surfaces only what we need to audit + extract: install path,
 subsystem, size, archive position. Unknown flag tokens are preserved
 verbatim in `.flags` so we don't lose info we don't yet understand.
+A bare-letter first token that is NOT a known filetype is warned about
+(once per type) rather than silently dropped — a silent drop here is the
+same failure class as inst's.
 """
 
 from __future__ import annotations
 
 import re
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
+
+#: Recognized .idb entry filetypes.  `X` is newer (IRIX 6.5.22); see module doc.
+_KNOWN_FILETYPES = ("f", "d", "l", "b", "c", "h", "n", "p", "s", "X")
+
+#: Unknown bare-letter filetypes already warned about (avoid repeat spam).
+_WARNED_FILETYPES: set[str] = set()
 
 
 # Capture `name(value)` flags — sum, size, off, cmpsize, etc.
@@ -127,7 +145,17 @@ def parse_line(line: str) -> IDBEntry | None:
         return None
     ftype = tokens[0]
     # Skip non-file directives like exitop(...), preop(...), requires...
-    if ftype not in ("f", "d", "l", "b", "c", "h", "n", "p", "s"):
+    if ftype not in _KNOWN_FILETYPES:
+        # A bare single letter that is not a known type is almost certainly a
+        # NEW filetype we do not understand.  Warn rather than drop silently:
+        # an unnoticed drop is how a whole product can go missing downstream.
+        if len(ftype) == 1 and ftype.isalpha() and ftype not in _WARNED_FILETYPES:
+            _WARNED_FILETYPES.add(ftype)
+            warnings.warn(
+                f"idb: unrecognized filetype {ftype!r} — its entries are being "
+                f"SKIPPED (first seen on line: {line.strip()[:80]!r})",
+                RuntimeWarning, stacklevel=2,
+            )
         return None
     if len(tokens) < 5:
         return None
