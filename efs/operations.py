@@ -9,13 +9,39 @@ patches the superblock's free counters + checksum. It never touches
 `fs_ncg`/`fs_cgfsize`/`fs_tinode`(capacity)/`fs_size` (the filesystem's
 geometry) and never rewrites the whole partition.
 
-Bug: sgi_mcp.sgi_fs.fs_inject()'s EFS branch used to extract every file,
+Bug 1: sgi_mcp.sgi_fs.fs_inject()'s EFS branch used to extract every file,
 then call EFSBuilder(size_mb) to rebuild the WHOLE partition from scratch.
 EFSBuilder derives cylinder-group/inode counts from size alone, so the
 rebuilt image had a different geometry than the source (e.g. fs_ncg 80 -> 260,
 fs_tinode capacity 842558 -> 8320), and then the padding write blew past
 quota. See progress_notes / tmp/Orchestrator/2026-09-24-fs-tools/
 92-pyirix-fs_inject-efs-mis-size.md for the full writeup.
+
+Bug 2 (found testing bug 1's fix against a REAL IRIX EFS golden, not just a
+synthetic mkfs_efs image): `fs_bmblock` is 0 on every filesystem that has
+never been grown -- real IRIX never bothers to write the default value, it
+just relies on the kernel's fallback (`efs_bitmap.c`: `bmbase = fs->fs_bmblock
+? fs->fs_bmblock : EFS_BITMAPBB`, EFS_BITMAPBB == 2). Addressing the bitmap
+at `fs_bmblock * EFS_BLOCK_SIZE` when fs_bmblock == 0 puts it at basic block
+0 -- the boot block and the superblock -- so every inject corrupted the
+superblock (fs_size 8302589 -> 13 on one real image) and, since the "bitmap"
+read back was actually boot-block/superblock bytes reinterpreted as free-bit
+data, allocation saw the disk as almost entirely full and wildly fragmented.
+Confirmed against real IRIX kernel source (sys/fs/efs_fs.h, efs_bitmap.c).
+
+Bug 3 (same investigation): the free-block search used simple first-fit
+starting at block 0, so it could report "not enough space" or "too
+fragmented" long before actually exhausting the real free-run inventory, and
+had no path for a file needing more than 12 fragments. Fixed by scanning the
+WHOLE bitmap once for every free run, always consuming runs LARGEST-first
+(minimizes the extent count for a given amount of fragmentation), and by
+supporting indirect extents (mirrors pyirix.efs.builder's whole-image-builder
+format, confirmed against sys/fs/efs_ino.h: up to EFS_DIRECTEXTENTS=12
+indirect-table blocks, each up to EFS_MAXINDIRBBS=64 basic blocks, holding
+EFS_BLOCK_SIZE/8=64 packed extent descriptors apiece) the way real IRIX does.
+If a file is so fragmented it needs more indirect-table blocks than that, the
+whole operation raises EFSNoSpaceError BEFORE any bitmap/data/inode byte is
+written to disk (allocation planning happens entirely in memory first).
 """
 
 import struct
@@ -55,6 +81,13 @@ class EFSNoSpaceError(EFSError):
 # EFS_ROOT_INODE + 1 == 3 for the same reason), and 2 is the root, which
 # always exists already.
 _FIRST_ALLOCATABLE_INODE = EFS_ROOT_INODE + 1
+
+# sys/fs/efs_ino.h: "up to EFS_DIRECTEXTENTS contiguous blocks of indirect
+# extents"; "The inode code expects to be able to handle indirect extents in
+# ONE buffer ... EFS_MAXINDIRBBS 64". Each indirect-table block holds
+# EFS_BLOCK_SIZE/8 packed 8-byte extent descriptors.
+EFS_MAXINDIRBBS = 64
+_EXTENTS_PER_INDIRECT_BLOCK = EFS_BLOCK_SIZE // 8
 
 
 # ── Directory entries (RAW — including '.' / '..') ──────────────────
@@ -141,23 +174,29 @@ def resolve_parent(f, part_offset, sb, path):
 
 # ── Free-space allocation (existing bitmap / CG layout, untouched) ──
 #
-# `fs_bmsize` is a BYTE count, not a block count — confirmed against the
-# real IRIX kernel header (sys/fs/efs_fs.h): "Basic blocks 2 through
-# 2 + BTOD(fs->fs_bmsize) - 1" (BTOD = bytes-to-disk-blocks), and matches
-# how pyirix.efs.builder.pack_superblock() is called (bmsize=bm_bytes).
-# Reading/writing `fs_bmsize * EFS_BLOCK_SIZE` bytes here previously over-read
-# by ~512x, capturing a stale snapshot that ran straight through the CG0
-# inode area — writing it back later silently reverted any inode just
-# written in between (e.g. a directory's own inode, right after extending
-# it), corrupting the just-added entries with no error.
+# Two facts, both confirmed against real IRIX kernel source
+# (sys/fs/efs_fs.h, sys/fs/efs_bitmap.c), not guessed:
+#
+# 1. `fs_bmblock` is 0 on every filesystem that has never been grown --
+#    that's not "uninitialized", it's the documented convention. The
+#    kernel's own bitmap-base helper is `bmbase = fs->fs_bmblock ?
+#    fs->fs_bmblock : EFS_BITMAPBB` (EFS_BITMAPBB == 2). Do the same here.
+# 2. `fs_bmsize` is a BYTE count, not a block count ("Basic blocks 2
+#    through 2 + BTOD(fs->fs_bmsize) - 1", BTOD = bytes-to-disk-blocks),
+#    matching how pyirix.efs.builder.pack_superblock() is called
+#    (bmsize=bm_bytes).
+
+def _bmbase(sb):
+    return sb['fs_bmblock'] if sb['fs_bmblock'] else 2
+
 
 def _read_bitmap(f, part_offset, sb):
-    f.seek(part_offset + sb['fs_bmblock'] * EFS_BLOCK_SIZE)
+    f.seek(part_offset + _bmbase(sb) * EFS_BLOCK_SIZE)
     return bytearray(f.read(sb['fs_bmsize']))
 
 
 def _write_bitmap(f, part_offset, sb, bitmap):
-    f.seek(part_offset + sb['fs_bmblock'] * EFS_BLOCK_SIZE)
+    f.seek(part_offset + _bmbase(sb) * EFS_BLOCK_SIZE)
     f.write(bytes(bitmap))
 
 
@@ -169,44 +208,94 @@ def _mark_allocated(bitmap, block_num):
     bitmap[block_num // 8] &= ~(1 << (7 - (block_num % 8)))
 
 
-def _alloc_blocks(bitmap, fs_size, nblocks, max_extents=EFS_MAX_EXTENTS):
-    """Allocate `nblocks` free blocks from `bitmap` (mutated in place),
-    packed into as few extents as possible (runs up to
-    EFS_MAX_EXTENT_LENGTH each). Returns a list of (bn, length) in
-    ascending block order. Raises EFSNoSpaceError if there isn't enough
-    free space, or if it can't be packed into `max_extents` direct
-    extents (this writer does not create indirect extent blocks)."""
-    if nblocks == 0:
-        return []
-    extents = []
-    remaining = nblocks
+def _mark_free(bitmap, block_num):
+    bitmap[block_num // 8] |= (1 << (7 - (block_num % 8)))
+
+
+def _free_extents(bitmap, extents):
+    """extents: iterable of (bn, length). Marks every block in them free
+    again (used when overwriting/extending discards old blocks)."""
+    for bn, length in extents:
+        for b in range(bn, bn + length):
+            _mark_free(bitmap, b)
+
+
+def _find_free_runs(bitmap, fs_size):
+    """Every maximal run of free blocks in `bitmap`, as (start, length),
+    in ascending block-number order. A single pass over the whole
+    filesystem, so it sees free space in every cylinder group, not just
+    whatever's near block 0."""
+    runs = []
     b = 0
-    while remaining > 0 and b < fs_size:
+    while b < fs_size:
         if not _bit_free(bitmap, b):
             b += 1
             continue
-        run_start = b
-        run_len = 0
-        while (b < fs_size and run_len < EFS_MAX_EXTENT_LENGTH
-               and run_len < remaining and _bit_free(bitmap, b)):
-            run_len += 1
+        start = b
+        while b < fs_size and _bit_free(bitmap, b):
             b += 1
-        for i in range(run_start, run_start + run_len):
-            _mark_allocated(bitmap, i)
-        extents.append((run_start, run_len))
-        remaining -= run_len
-        if len(extents) > max_extents:
-            raise EFSNoSpaceError(
-                f"Cannot pack {nblocks} blocks into {max_extents} direct "
-                f"extents (free space too fragmented)")
+        runs.append((start, b - start))
+    return runs
+
+
+def _alloc_blocks(bitmap, fs_size, nblocks, max_run=EFS_MAX_EXTENT_LENGTH):
+    """Allocate `nblocks` free blocks from `bitmap` (mutated in place).
+
+    Finds every free run across the WHOLE filesystem first, then consumes
+    them LARGEST-first — this minimizes the number of extents needed for
+    a given amount of free-space fragmentation (a naive first-fit-from-
+    block-0 scan can need far more extents, or even wrongly report "not
+    enough space", when the earliest free blocks happen to be scattered
+    in small runs while big contiguous runs sit later in the filesystem).
+    A run longer than `max_run` basic blocks is split into multiple
+    extents (an EFS extent's length field is one byte: EFS_MAXEXTENTLEN
+    == 248 for data, EFS_MAXINDIRBBS == 64 for indirect-table blocks).
+
+    Returns a list of (bn, length) in ascending block-number order (NOT
+    necessarily file-logical order — callers needing file-logical extent
+    order should sort or track that themselves; both current callers just
+    concatenate data sequentially, so ascending-by-allocation is fine).
+    Raises EFSNoSpaceError if the true total free space is insufficient.
+    Never raises for fragmentation alone -- that is the caller's call
+    (direct vs indirect extent representation).
+    """
+    if nblocks == 0:
+        return []
+
+    runs = _find_free_runs(bitmap, fs_size)
+    total_free = sum(length for _, length in runs)
+    if total_free < nblocks:
+        raise EFSNoSpaceError(
+            f"Not enough free space: needed {nblocks} blocks, "
+            f"{total_free} found")
+
+    runs.sort(key=lambda r: r[1], reverse=True)
+    extents = []
+    remaining = nblocks
+    for start, length in runs:
+        if remaining <= 0:
+            break
+        take = min(length, remaining)
+        pos = start
+        left = take
+        while left > 0:
+            chunk = min(left, max_run)
+            extents.append((pos, chunk))
+            pos += chunk
+            left -= chunk
+        remaining -= take
+
     if remaining > 0:
+        # total_free already proved this can't happen; stay safe anyway.
         raise EFSNoSpaceError(
             f"Not enough free space: needed {nblocks} blocks, "
             f"{nblocks - remaining} found")
-    if len(extents) > max_extents:
-        raise EFSNoSpaceError(
-            f"Cannot pack {nblocks} blocks into {max_extents} direct "
-            f"extents (free space too fragmented)")
+
+    for bn, length in extents:
+        for b in range(bn, bn + length):
+            _mark_allocated(bitmap, b)
+
+    extents.sort(key=lambda e: e[0])
     return extents
 
 
@@ -236,18 +325,124 @@ def _alloc_inode(f, part_offset, sb):
     raise EFSNoSpaceError("No free inodes")
 
 
+# ── Extent-table packing: direct or indirect, exactly like real IRIX ──
+#
+# sys/fs/efs_ino.h: "Inodes consist of some number of extents ... When
+# di_numextents exceeds EFS_DIRECTEXTENTS[12], the extents are kept
+# elsewhere ... a list of up to EFS_DIRECTEXTENTS contiguous blocks of
+# indirect extents ... For indirect extents the field
+# di_u.di_extents[0].ex_offset contains the number of indirect extents."
+# Matches pyirix.efs.builder.EFSImageBuilder._build_indirect_extents,
+# which this reuses the on-disk shape of (not the code, since that class
+# plans a whole-image build rather than allocating from a live bitmap).
+
+def _pack_extents_for_inode(bitmap, fs_size, raw_data_extents):
+    """raw_data_extents: (bn, length) pairs already allocated on `bitmap`,
+    in the order they should appear in the file (ascending bn is fine —
+    _alloc_blocks returns them in exactly the order they were consumed).
+
+    Returns (numextents, ext_bytes, indirect_writes):
+      numextents  — value for the inode's di_numextents (== number of DATA
+                    extents, whether stored directly or indirectly).
+      ext_bytes   — the up-to-96 bytes to store at inode offset 32 (either
+                    the packed direct data extents, or the packed indirect
+                    pointer extents).
+      indirect_writes — [] for the direct case; otherwise a list of
+                    (bn, bytes) raw blocks to also write to disk, holding
+                    the actual packed data-extent table.
+
+    Raises EFSNoSpaceError (before touching `bitmap` any further, and
+    before the caller has written anything to disk) if even indirect
+    extents can't represent this many fragments.
+    """
+    data_extents = _extents_with_offsets(raw_data_extents)
+
+    if len(data_extents) <= EFS_MAX_EXTENTS:
+        ext_bytes = b''.join(pack_extent(0, bn, length, offset)
+                             for bn, length, offset in data_extents)
+        return len(data_extents), ext_bytes, []
+
+    # Indirect: pack every data extent into an 8-byte descriptor table,
+    # then allocate blocks (<=64 bb per run) to hold that table.
+    ext_table = b''.join(pack_extent(0, bn, length, offset)
+                         for bn, length, offset in data_extents)
+    indirect_blocks_needed = (
+        (len(data_extents) + _EXTENTS_PER_INDIRECT_BLOCK - 1)
+        // _EXTENTS_PER_INDIRECT_BLOCK)
+
+    indirect_raw = _alloc_blocks(bitmap, fs_size, indirect_blocks_needed,
+                                 max_run=EFS_MAXINDIRBBS)
+    if len(indirect_raw) > EFS_MAX_EXTENTS:
+        # Free what we just marked for the indirect table before raising —
+        # the data extents themselves are the CALLER's to free (it knows
+        # whether they came from a fresh alloc or a caller-owned bitmap it
+        # will discard entirely on error).
+        _free_extents(bitmap, indirect_raw)
+        raise EFSNoSpaceError(
+            f"File needs {len(data_extents)} data extents "
+            f"({indirect_blocks_needed} indirect-table blocks) but free "
+            f"space is fragmented into more than {EFS_MAX_EXTENTS} runs "
+            f"even for the indirect-table blocks themselves — real IRIX "
+            f"could not represent this file either")
+
+    indirect_writes = []
+    table_offset = 0
+    for bn, length in indirect_raw:
+        chunk_size = length * EFS_BLOCK_SIZE
+        chunk = ext_table[table_offset:table_offset + chunk_size]
+        if len(chunk) < chunk_size:
+            chunk = chunk + b'\x00' * (chunk_size - len(chunk))
+        indirect_writes.append((bn, chunk))
+        table_offset += chunk_size
+
+    num_indirect = len(indirect_raw)
+    inode_ext_bytes = b''
+    for i, (bn, length) in enumerate(indirect_raw):
+        offset = num_indirect if i == 0 else 0
+        inode_ext_bytes += pack_extent(0, bn, length, offset)
+
+    return len(data_extents), inode_ext_bytes, indirect_writes
+
+
+def _inode_owned_blocks(inode, data_extents):
+    """All (bn, length) blocks physically owned by `inode`: its data
+    blocks, plus — for an inode using indirect extents — the indirect
+    extent-table blocks themselves (the up-to-12 raw entries stored
+    directly in the inode ARE those table-block pointers in that case,
+    not data)."""
+    owned = [(e['bn'], e['length']) for e in data_extents]
+    if inode['numextents'] > EFS_MAX_EXTENTS:
+        owned += [(e['bn'], e['length']) for e in inode['extents']]
+    return owned
+
+
 # ── Raw inode / data writers ─────────────────────────────────────────
 
-def _write_inode(f, part_offset, sb, ino, mode, nlink, uid, gid, size,
-                 mtime, extents):
+def _write_inode_packed(f, part_offset, sb, ino, mode, nlink, uid, gid,
+                        size, mtime, numextents, ext_bytes):
     bb = inode_to_bb(sb, ino)
     slot = ino & 0x3
-    ext_bytes = b''.join(pack_extent(0, bn, length, offset)
-                         for bn, length, offset in extents)
     inode_bytes = pack_inode(mode, nlink, uid, gid, size, mtime,
-                             len(extents), ext_bytes)
+                             numextents, ext_bytes)
     f.seek(part_offset + bb * EFS_BLOCK_SIZE + slot * EFS_INODE_SIZE)
     f.write(inode_bytes)
+
+
+def _patch_inode_size_mtime(f, part_offset, sb, ino, size, mtime):
+    """Update only size/atime/mtime/ctime, leaving the extent table (and
+    everything else) byte-for-byte untouched. Used when a directory's new
+    contents still fit in its already-allocated blocks."""
+    bb = inode_to_bb(sb, ino)
+    slot = ino & 0x3
+    pos = part_offset + bb * EFS_BLOCK_SIZE + slot * EFS_INODE_SIZE
+    f.seek(pos)
+    buf = bytearray(f.read(EFS_INODE_SIZE))
+    struct.pack_into('>i', buf, 8, size)
+    struct.pack_into('>i', buf, 12, mtime)   # atime
+    struct.pack_into('>i', buf, 16, mtime)   # mtime
+    struct.pack_into('>i', buf, 20, mtime)   # ctime
+    f.seek(pos)
+    f.write(bytes(buf))
 
 
 def _extents_with_offsets(raw_extents):
@@ -275,6 +470,14 @@ def _write_data_to_extents(f, part_offset, extents, data):
         f.seek(part_offset + bn * EFS_BLOCK_SIZE)
         f.write(chunk)
         pos += chunk_len
+
+
+def _write_raw_blocks(f, part_offset, writes):
+    """writes: list of (bn, bytes) — used for indirect extent-table
+    blocks, which aren't file data."""
+    for bn, chunk in writes:
+        f.seek(part_offset + bn * EFS_BLOCK_SIZE)
+        f.write(chunk)
 
 
 # ── Superblock patch (only the free counters + checksum) ────────────
@@ -315,21 +518,18 @@ def _patch_superblock_counters(f, part_offset, sb, delta_tfree, delta_tinode):
 
 def _add_dir_entry(f, part_offset, sb, parent_ino, name, child_ino):
     """Append (name, child_ino) to parent_ino's directory, rebuilding
-    just that directory's own blocks. Reuses existing blocks/extents
-    when the new entry still fits; otherwise allocates additional
-    blocks from the shared bitmap and extends the directory's extent
-    list. Returns the net number of NEW data blocks allocated (0 if the
-    existing blocks had room) — the caller uses this to update
-    fs_tfree."""
+    just that directory's own blocks. Reuses the existing blocks in place
+    when the new entry still fits (no bitmap change at all); otherwise
+    frees everything currently owned by the directory (data blocks, and
+    any indirect-table blocks) and reallocates fresh for the full new
+    size — simpler and just as correct as trying to preserve old extent
+    positions, and it naturally handles a directory that itself needs to
+    grow from direct to indirect extents. Returns the net number of
+    blocks now used by the directory that weren't before (0 if it fit in
+    place) — the caller uses this to update fs_tfree."""
     parent_inode = _reader_read_inode(f, part_offset, sb, parent_ino)
     if parent_inode is None:
         raise EFSPathError("Parent inode vanished")
-    if parent_inode['numextents'] > EFS_MAX_EXTENTS:
-        raise EFSError(
-            "Directory uses indirect extents; in-place write not supported")
-
-    old_extents = [(e['bn'], e['length']) for e in parent_inode['extents']]
-    old_blocks = sum(length for _, length in old_extents)
 
     entries = _read_raw_dir_entries(f, part_offset, parent_inode)
     for existing_name, _ in entries:
@@ -340,34 +540,46 @@ def _add_dir_entry(f, part_offset, sb, parent_ino, name, child_ino):
     new_data = build_dir_blocks(entries)
     new_blocks = len(new_data) // EFS_BLOCK_SIZE
 
-    bitmap = None
-    extra_blocks_allocated = 0
-    if new_blocks > old_blocks:
-        extra_needed = new_blocks - old_blocks
-        if len(old_extents) >= EFS_MAX_EXTENTS:
-            raise EFSNoSpaceError(
-                "Directory already has the max number of extents")
-        bitmap = _read_bitmap(f, part_offset, sb)
-        new_extent_budget = EFS_MAX_EXTENTS - len(old_extents)
-        extra_extents = _alloc_blocks(bitmap, sb['fs_size'], extra_needed,
-                                      max_extents=new_extent_budget)
-        all_raw_extents = old_extents + extra_extents
-        extra_blocks_allocated = extra_needed
-    else:
-        all_raw_extents = old_extents
-
-    all_extents = _extents_with_offsets(all_raw_extents)
-    _write_data_to_extents(f, part_offset, all_extents, new_data)
+    old_data_extents = get_all_extents(f, part_offset, parent_inode)
+    old_raw = [(e['bn'], e['length']) for e in old_data_extents]
+    old_block_count = sum(length for _, length in old_raw)
 
     now = int(time.time())
-    _write_inode(f, part_offset, sb, parent_ino, parent_inode['mode'],
-                parent_inode['nlink'], parent_inode['uid'],
-                parent_inode['gid'], len(new_data), now, all_extents)
 
-    if bitmap is not None:
-        _write_bitmap(f, part_offset, sb, bitmap)
+    if new_blocks <= old_block_count:
+        # Fits in the already-allocated blocks -- no bitmap change, no
+        # extent-table change, just new content + size/mtime.
+        _write_data_to_extents(f, part_offset, _extents_with_offsets(old_raw),
+                               new_data)
+        _patch_inode_size_mtime(f, part_offset, sb, parent_ino,
+                                len(new_data), now)
+        return 0
 
-    return extra_blocks_allocated
+    old_table_blocks = 0
+    if parent_inode['numextents'] > EFS_MAX_EXTENTS:
+        old_table_blocks = sum(e['length'] for e in parent_inode['extents'])
+
+    bitmap = _read_bitmap(f, part_offset, sb)
+    _free_extents(bitmap, _inode_owned_blocks(parent_inode, old_data_extents))
+
+    raw_data_extents = _alloc_blocks(bitmap, sb['fs_size'], new_blocks)
+    numextents, ext_bytes, indirect_writes = _pack_extents_for_inode(
+        bitmap, sb['fs_size'], raw_data_extents)
+
+    _write_data_to_extents(f, part_offset, _extents_with_offsets(raw_data_extents),
+                           new_data)
+    _write_raw_blocks(f, part_offset, indirect_writes)
+    _write_inode_packed(f, part_offset, sb, parent_ino, parent_inode['mode'],
+                        parent_inode['nlink'], parent_inode['uid'],
+                        parent_inode['gid'], len(new_data), now,
+                        numextents, ext_bytes)
+    _write_bitmap(f, part_offset, sb, bitmap)
+
+    new_table_blocks = sum(len(chunk) // EFS_BLOCK_SIZE
+                           for _, chunk in indirect_writes)
+    new_total = new_blocks + new_table_blocks
+    old_total = old_block_count + old_table_blocks
+    return new_total - old_total
 
 
 # ── Public API ────────────────────────────────────────────────────────
@@ -375,14 +587,16 @@ def _add_dir_entry(f, part_offset, sb, parent_ino, name, child_ino):
 def create_file(f, part_offset, sb, path, data, mode=0o100644, uid=0, gid=0):
     """Create a new regular file at `path` with `data`, entirely in
     place: allocates one free inode + free data blocks from the
-    filesystem's existing bitmap/CG layout, writes the extents, adds
-    the directory entry (extending the parent directory if it doesn't
-    have room), and patches the superblock's free counters + checksum.
-    Never touches fs_ncg/fs_cgfsize/fs_size/inode-capacity and never
-    rewrites the partition.
+    filesystem's existing bitmap/CG layout, writes the extents (direct,
+    or indirect if the file needs more than 12 fragments), adds the
+    directory entry (extending the parent directory if it doesn't have
+    room), and patches the superblock's free counters + checksum. Never
+    touches fs_ncg/fs_cgfsize/fs_size/inode-capacity and never rewrites
+    the partition.
 
     Returns the new inode number. Raises EFSExistsError /
-    EFSPathError / EFSNoSpaceError.
+    EFSPathError / EFSNoSpaceError -- and on EFSNoSpaceError, nothing has
+    been written to disk yet (allocation is planned in memory first).
     """
     if resolve_path(f, part_offset, sb, path) is not None:
         raise EFSExistsError(f"Path already exists: {path}")
@@ -392,6 +606,8 @@ def create_file(f, part_offset, sb, path, data, mode=0o100644, uid=0, gid=0):
     nblocks = (len(data) + EFS_BLOCK_SIZE - 1) // EFS_BLOCK_SIZE
     bitmap = _read_bitmap(f, part_offset, sb)
     raw_extents = _alloc_blocks(bitmap, sb['fs_size'], nblocks)
+    numextents, ext_bytes, indirect_writes = _pack_extents_for_inode(
+        bitmap, sb['fs_size'], raw_extents)
     extents = _extents_with_offsets(raw_extents)
     # Persist the bitmap NOW, before _add_dir_entry does its own
     # independent read/allocate/write of the bitmap below — otherwise it
@@ -402,10 +618,11 @@ def create_file(f, part_offset, sb, path, data, mode=0o100644, uid=0, gid=0):
     new_ino = _alloc_inode(f, part_offset, sb)
 
     _write_data_to_extents(f, part_offset, extents, data)
+    _write_raw_blocks(f, part_offset, indirect_writes)
 
     now = int(time.time())
-    _write_inode(f, part_offset, sb, new_ino, mode, 1, uid, gid,
-                len(data), now, extents)
+    _write_inode_packed(f, part_offset, sb, new_ino, mode, 1, uid, gid,
+                        len(data), now, numextents, ext_bytes)
 
     # Directory entry insertion may itself need more blocks; it reads
     # its own fresh copy of the parent inode, so do it AFTER this
@@ -414,7 +631,8 @@ def create_file(f, part_offset, sb, path, data, mode=0o100644, uid=0, gid=0):
     dir_extra_blocks = _add_dir_entry(f, part_offset, sb, parent_ino,
                                       basename, new_ino)
 
-    total_blocks_used = nblocks + dir_extra_blocks
+    table_blocks = sum(len(chunk) // EFS_BLOCK_SIZE for _, chunk in indirect_writes)
+    total_blocks_used = nblocks + table_blocks + dir_extra_blocks
     _patch_superblock_counters(f, part_offset, sb,
                                delta_tfree=-total_blocks_used,
                                delta_tinode=-1)
@@ -424,10 +642,11 @@ def create_file(f, part_offset, sb, path, data, mode=0o100644, uid=0, gid=0):
 
 def write_file(f, part_offset, sb, path, data):
     """Overwrite an existing regular file's contents in place: frees its
-    old data blocks back to the bitmap, allocates fresh ones for the
-    new data, and rewrites its inode. The inode number and directory
-    entry are unchanged. Raises EFSPathError if `path` doesn't resolve
-    to an existing regular file."""
+    old data blocks (and any indirect-table blocks) back to the bitmap,
+    allocates fresh ones for the new data (direct or indirect as needed),
+    and rewrites its inode. The inode number and directory entry are
+    unchanged. Raises EFSPathError if `path` doesn't resolve to an
+    existing regular file."""
     ino = resolve_path(f, part_offset, sb, path)
     if ino is None:
         raise EFSPathError(f"File not found: {path}")
@@ -436,29 +655,37 @@ def write_file(f, part_offset, sb, path, data):
         raise EFSPathError(f"Cannot read inode for: {path}")
     if (inode['mode'] & S_IFMT) != S_IFREG:
         raise EFSPathError(f"Not a regular file: {path}")
-    if inode['numextents'] > EFS_MAX_EXTENTS:
-        raise EFSError(
-            "File uses indirect extents; in-place write not supported")
 
-    old_extents = [(e['bn'], e['length']) for e in inode['extents']]
-    old_blocks = sum(length for _, length in old_extents)
+    old_data_extents = get_all_extents(f, part_offset, inode)
+    old_raw = [(e['bn'], e['length']) for e in old_data_extents]
+    old_block_count = sum(length for _, length in old_raw)
+    old_table_blocks = 0
+    if inode['numextents'] > EFS_MAX_EXTENTS:
+        old_table_blocks = sum(e['length'] for e in inode['extents'])
 
     nblocks = (len(data) + EFS_BLOCK_SIZE - 1) // EFS_BLOCK_SIZE
 
     bitmap = _read_bitmap(f, part_offset, sb)
-    for bn, length in old_extents:
-        for b in range(bn, bn + length):
-            bitmap[b // 8] |= (1 << (7 - (b % 8)))  # free it
-    raw_extents = _alloc_blocks(bitmap, sb['fs_size'], nblocks)
-    extents = _extents_with_offsets(raw_extents)
-    _write_bitmap(f, part_offset, sb, bitmap)
+    _free_extents(bitmap, _inode_owned_blocks(inode, old_data_extents))
 
+    raw_extents = _alloc_blocks(bitmap, sb['fs_size'], nblocks)
+    numextents, ext_bytes, indirect_writes = _pack_extents_for_inode(
+        bitmap, sb['fs_size'], raw_extents)
+    extents = _extents_with_offsets(raw_extents)
+
+    _write_bitmap(f, part_offset, sb, bitmap)
     _write_data_to_extents(f, part_offset, extents, data)
+    _write_raw_blocks(f, part_offset, indirect_writes)
 
     now = int(time.time())
-    _write_inode(f, part_offset, sb, ino, inode['mode'], inode['nlink'],
-                inode['uid'], inode['gid'], len(data), now, extents)
+    _write_inode_packed(f, part_offset, sb, ino, inode['mode'], inode['nlink'],
+                        inode['uid'], inode['gid'], len(data), now,
+                        numextents, ext_bytes)
 
+    new_table_blocks = sum(len(chunk) // EFS_BLOCK_SIZE
+                           for _, chunk in indirect_writes)
+    new_total = nblocks + new_table_blocks
+    old_total = old_block_count + old_table_blocks
     _patch_superblock_counters(f, part_offset, sb,
-                               delta_tfree=old_blocks - nblocks,
+                               delta_tfree=old_total - new_total,
                                delta_tinode=0)
