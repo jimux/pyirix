@@ -130,6 +130,7 @@ from pyirix.xfs.constants import (
     XFSPathError,
     XFSExistsError,
     XFSNotEmptyError,
+    XFSDataNotFlushedError,
 )
 
 # Create (mkfs) — build an IRIX V1-directory XFS from scratch

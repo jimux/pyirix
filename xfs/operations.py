@@ -320,8 +320,9 @@ def extract_recursive(f, part_offset, sb, ino, path, dest, stats=None):
             with open(host_path, 'wb') as out:
                 out.write(data)
             stats['files'] += 1
-        except Exception:
+        except Exception as e:
             stats['errors'] += 1
+            stats.setdefault('warnings', []).append(f"{path}: {e}")
 
     elif ft == S_IFLNK:
         try:
@@ -332,8 +333,9 @@ def extract_recursive(f, part_offset, sb, ino, path, dest, stats=None):
                 os.unlink(host_path)
             os.symlink(target, host_path)
             stats['symlinks'] += 1
-        except Exception:
+        except Exception as e:
             stats['errors'] += 1
+            stats.setdefault('warnings', []).append(f"{path}: {e}")
 
     return stats
 

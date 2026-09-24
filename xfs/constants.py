@@ -214,3 +214,14 @@ class XFSExistsError(XFSError):
 class XFSNotEmptyError(XFSError):
     """Directory is not empty."""
     pass
+
+class XFSDataNotFlushedError(XFSError):
+    """di_size > 0 but the inode maps no data (no extents, di_nblocks == 0).
+
+    This is what a VM killed without sync leaves behind: the directory
+    entry and inode exist, di_size was updated, but the data blocks were
+    never written and the extent list is empty. It is NOT a genuinely
+    empty file (size == 0) and reading it as b'' silently manufactures a
+    truncated/empty result with no signal that anything is wrong.
+    """
+    pass

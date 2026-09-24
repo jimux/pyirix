@@ -9,7 +9,7 @@ import sys
 
 from pyirix.xfs.constants import (
     XFS_SB_MAGIC, S_IFMT, S_IFDIR, S_IFREG, S_IFLNK,
-    XFSError,
+    XFSError, XFSDataNotFlushedError,
 )
 from pyirix.xfs.image import open_disk_image, find_xfs_partition
 from pyirix.xfs.superblock import read_superblock, sash_compatible
@@ -132,7 +132,11 @@ def cmd_cat(args):
             print(f"Error: Not a regular file", file=sys.stderr)
             return 1
 
-        data = read_file_data(f, part_offset, sb, inode)
+        try:
+            data = read_file_data(f, part_offset, sb, inode)
+        except XFSDataNotFlushedError as e:
+            print(f"Error: {args.path}: {e}", file=sys.stderr)
+            return 1
 
         if args.binary:
             sys.stdout.buffer.write(data)

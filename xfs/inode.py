@@ -11,7 +11,7 @@ from pyirix.xfs.constants import (
     XFS_DINODE_FMT_DEV, XFS_DINODE_FMT_LOCAL,
     XFS_DINODE_FMT_EXTENTS, XFS_DINODE_FMT_BTREE,
     S_IFMT, S_IFLNK, S_IFDIR, S_IFREG,
-    XFSCorruptionError,
+    XFSCorruptionError, XFSDataNotFlushedError,
 )
 from pyirix.xfs.ondisk import (
     parse_inode_core, pack_inode_core,
@@ -234,7 +234,15 @@ def read_file_data(f, part_offset, sb, inode):
 
     extents = get_extents(f, part_offset, sb, inode)
     if not extents:
-        return b''
+        # size > 0 (checked above) but the inode maps no data at all: a VM
+        # killed without sync leaves exactly this — di_size updated,
+        # di_nblocks == 0 / extent list empty, data never written. This is
+        # NOT the same as a genuinely empty file (size == 0, handled above);
+        # returning b'' here used to manufacture a silent, indistinguishable
+        # empty read. Say so.
+        raise XFSDataNotFlushedError(
+            f"data not on disk (size {size} but no extents; unflushed or "
+            f"needs log replay)")
 
     blocksize = sb['sb_blocksize']
     # Place each extent at its LOGICAL offset (startoff * blocksize), zero-filling
