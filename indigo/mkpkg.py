@@ -21,7 +21,7 @@ Design choices (see ``progress_notes/indigo_linux/11-irix-assets-package.md``):
 * **nfpm route:** we invoke a pinned, sha256-verified ``nfpm`` *directly* with a
   generated YAML, rather than shelling into ``indigo-linux/packaging/lib.sh``
   (bash, and read-only for this work).  The pins mirror ``lib.sh`` exactly and
-  the cache dir is shared (``tmp/indigo-packaging/cache``) so the already-fetched
+  the cache dir is shared (``infra/indigo-packaging/cache``) so the already-fetched
   binary is reused.  The tgz is a plain ``tar`` of the same staged tree (nfpm has
   no tgz packager) — one source of truth, no drift.
 * **version:** default derived from the import receipt's date (``updated`` else
@@ -69,7 +69,7 @@ _HOMEPAGE = "https://localhost/indigo-linux"
 
 
 def _default_scratch() -> Path:
-    """Workspace ``tmp/indigo-packaging`` (never system /tmp), matching lib.sh."""
+    """Workspace ``infra/indigo-packaging`` (never system /tmp), matching lib.sh."""
     # this file: .../sgi-irix-re/pyirix/indigo/mkpkg.py → workspace root is 4 up
     here = Path(__file__).resolve()
     ws = here.parents[3]                    # .../qemu-sgi

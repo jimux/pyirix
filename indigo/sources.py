@@ -251,7 +251,7 @@ def _candidate_partitions(f, read_vh) -> list[int]:
 
 def _scratch_dir() -> str:
     """Project-local scratch for temp extraction (falls back to system tmp)."""
-    for cand in ("tmp/indigo-import", "../tmp/indigo-import"):
+    for cand in ("infra/indigo-import", "../infra/indigo-import"):
         p = Path(cand)
         if p.parent.exists():
             p.mkdir(parents=True, exist_ok=True)

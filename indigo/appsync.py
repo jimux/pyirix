@@ -33,7 +33,7 @@ byte-identical output, and a content hash lets callers skip the (expensive)
 fm is not ported yet, but this data pipeline is validated NOW because stock
 IRIX ``fftr`` runs on the host under ``qemu-irixn32`` user-mode emulation --
 see ``tests/test_indigo_appsync.py`` and the gate script in
-``tmp/indigo-appsync/``.
+``tmp/_archive/indigo-appsync/``.
 """
 
 from __future__ import annotations
