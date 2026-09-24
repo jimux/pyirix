@@ -18,7 +18,7 @@ aren't on disk.
 
 CLI:
     python3 -m pyirix.dist.audit \\
-        --disk vm_instances/ip54-fresh/disk.qcow2 \\
+        --disk vm_instances/irix655-fresh/disk.qcow2 \\
         --dist-image software_library/.../combined.img \\
         [--product desktop_eoe]            # audit just one product
         [--json out.json]                  # emit machine-readable report

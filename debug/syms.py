@@ -2,7 +2,7 @@
 """kernel_syms — generate a correct kernel symbol JSON from the ACTUAL kernel,
 and detect symbol drift against a (possibly stale) JSON.
 
-The ip54_kernel_symbols_*.json files drift badly when the kernel is rebuilt —
+Kernel symbol JSON files drift badly when the kernel is rebuilt —
 every address shifts, so gdb breakpoints silently hit WRONG addresses (see
 memory kernel_symbol_drift).  ALWAYS regenerate from the running kernel.
 
@@ -14,12 +14,12 @@ Usage:
   python3 kernel_syms.py gen --elf /workspace/_golden_extract/unix --out syms.json
 
   # from a disk image (extracts /unix first):
-  python3 kernel_syms.py gen --image vm_instances/ip54-test/disk.qcow2.golden \
-      --kpath /unix --out ip54_kernel_symbols_golden.json
+  python3 kernel_syms.py gen --image vm_instances/irix655-test/disk.qcow2.golden \
+      --kpath /unix --out kernel_symbols.json
 
   # drift check: compare a JSON against the real kernel ELF
   python3 kernel_syms.py drift --elf /workspace/_golden_extract/unix \
-      --json /workspace/ip54_kernel_symbols_disk.json
+      --json kernel_symbols.json
 """
 import argparse, json, os, re, subprocess, sys, tempfile
 

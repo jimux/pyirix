@@ -4,7 +4,7 @@
 
 Two halves under one roof. The **static** tools analyze extracted ELF binaries with no QEMU — disassembly, symbol lookup, string/syscall/data references, call graphs, DWARF type recovery. The **live** tool (`guest_gdb`) drives `gdb-multiarch` against a running QEMU MIPS64 guest.
 
-Every static module is runnable as a script: `python3 -m pyirix.debug.<module>`. Most share two environment variables for configuration — `KELF` (path to the kernel/ELF) and `KSYMS` (path to a symbol JSON) — with defaults pointing at the golden IP54 kernel.
+Every static module is runnable as a script: `python3 -m pyirix.debug.<module>`. Most share two environment variables for configuration — `KELF` (path to the kernel/ELF) and `KSYMS` (path to a symbol JSON) — which you should point at the kernel that is actually running.
 
 ## Shared symbol-resolution pattern
 
@@ -126,7 +126,7 @@ python3 -m pyirix.debug.syms drift --elf /path/unix --json syms.json   # exits 1
 ```python
 from pyirix.debug.guest_gdb import GuestGDB
 
-g = GuestGDB(port=1234, syms="ip54_kernel_symbols_golden.json")
+g = GuestGDB(port=1234, syms="kernel_symbols.json")
 
 # Hardware breakpoint by name; on stop, dumps registers + 256 stack words + code at $pc
 out = g.catch(["pvfb_gf_PositionCursor"])
@@ -136,7 +136,7 @@ print(g.read_word("vc2_cursor_x"))            # one-shot peek of a 32-bit kernel
 g.catch_if("idev_rput", "$a1 == 0")           # conditional (soft) breakpoint
 ```
 
-`catch` uses hardware breakpoints (`hbreak`) so it never has to write the kernel text. `read_word` does a one-shot peek. `catch_if` plants a conditional soft breakpoint. A documented limitation: hardware **watchpoints** (`watch()`) plant but never fire on the sgi-ip54/TCG build because KSEG0/KSEG1 data is direct-mapped and TCG's watchpoint check doesn't cover those accesses — use replay/reverse-debugging to find a corrupting write instead.
+`catch` uses hardware breakpoints (`hbreak`) so it never has to write the kernel text. `read_word` does a one-shot peek. `catch_if` plants a conditional soft breakpoint. A documented limitation: hardware **watchpoints** (`watch()`) plant but never fire under TCG because KSEG0/KSEG1 data is direct-mapped and TCG's watchpoint check doesn't cover those accesses — use replay/reverse-debugging to find a corrupting write instead.
 
 Replay mode enables reverse execution. `reverse_step()` and `reverse_continue()` **return gdb command lists** (they don't run gdb themselves) for composition inside `script()`:
 

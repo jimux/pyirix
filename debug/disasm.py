@@ -7,7 +7,7 @@ from .mips_disasm import MipsDisassembler
 
 # Override with env: KELF=/workspace/xsgi.bin KSYMS=/workspace/xsgi_symbols.json
 ELF = os.environ.get("KELF", "/workspace/_golden_extract/unix")
-SYMS = os.environ.get("KSYMS", "/workspace/ip54_kernel_symbols_golden.json")
+SYMS = os.environ.get("KSYMS", "kernel_symbols.json")
 
 
 def load_text(elf):

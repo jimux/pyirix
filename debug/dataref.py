@@ -2,7 +2,7 @@
 """Find where a kernel address is referenced: as a stored 4-byte data word
 (function pointer in a struct/table) and as lui/ori|addiu immediate loads."""
 import json, struct, sys, bisect, os
-ELF=os.environ.get("KELF","/workspace/_golden_extract/unix"); SYMS=os.environ.get("KSYMS","/workspace/ip54_kernel_symbols_golden.json")
+ELF=os.environ.get("KELF","/workspace/_golden_extract/unix"); SYMS=os.environ.get("KSYMS","kernel_symbols.json")
 target=int(sys.argv[1],0)
 d=open(ELF,"rb").read()
 is64=d[4]==2

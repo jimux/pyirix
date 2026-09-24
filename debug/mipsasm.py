@@ -3,7 +3,7 @@
 
 Task C3 (#33): kills the hand-encoding bug class (e.g. the lw $t9 used $k0 not $t2
 encoding bug found via GDB in the interrupt-wiring work, #21). Instead of writing raw
-0x8D5900A0 words by hand into prom-building/src/fw/ip54_stubs.c, write the trampoline
+0x8D5900A0 words by hand into prom-building/src/fw/pv_stubs.c, write the trampoline
 in real assembly and let the cross-assembler encode it.
 
 Pipeline (matches the C3 spec):
