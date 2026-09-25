@@ -640,6 +640,84 @@ def create_file(f, part_offset, sb, path, data, mode=0o100644, uid=0, gid=0):
     return new_ino
 
 
+def _bump_dir_nlink(f, part_offset, sb, ino, delta=1):
+    """Adjust a directory inode's link count in place (offset 2), leaving
+    the extent table and every other field byte-for-byte untouched. A new
+    subdirectory adds one to its parent's nlink (via the child's '..')."""
+    bb = inode_to_bb(sb, ino)
+    slot = ino & 0x3
+    pos = part_offset + bb * EFS_BLOCK_SIZE + slot * EFS_INODE_SIZE
+    f.seek(pos)
+    buf = bytearray(f.read(EFS_INODE_SIZE))
+    cur = struct.unpack_from('>h', buf, 2)[0]
+    struct.pack_into('>h', buf, 2, cur + delta)
+    f.seek(pos)
+    f.write(bytes(buf))
+
+
+def create_dir(f, part_offset, sb, path, mode=S_IFDIR | 0o755, uid=0, gid=0):
+    """Create a new directory at `path`, entirely in place: allocates one
+    free inode and the blocks for its minimal '.'/'..' content from the
+    filesystem's existing bitmap/CG layout, writes the directory blocks
+    and inode, adds the entry to the parent directory (extending the
+    parent if it has no room), bumps the parent's nlink, and patches the
+    superblock's free counters + checksum. Never touches
+    fs_ncg/fs_cgfsize/fs_size/inode-capacity and never rewrites the
+    partition.
+
+    Mirrors create_file. Returns the new inode number. Raises
+    EFSExistsError / EFSPathError / EFSNoSpaceError -- and on
+    EFSNoSpaceError nothing has been written (allocation is planned in
+    memory first).
+    """
+    if resolve_path(f, part_offset, sb, path) is not None:
+        raise EFSExistsError(f"Path already exists: {path}")
+
+    parent_ino, basename = resolve_parent(f, part_offset, sb, path)
+
+    # The new directory's own inode number appears in its '.' entry, so
+    # allocate the inode before building its content.
+    new_ino = _alloc_inode(f, part_offset, sb)
+
+    dir_data = build_dir_blocks([('.', new_ino), ('..', parent_ino)])
+    nblocks = len(dir_data) // EFS_BLOCK_SIZE
+
+    bitmap = _read_bitmap(f, part_offset, sb)
+    raw_extents = _alloc_blocks(bitmap, sb['fs_size'], nblocks)
+    numextents, ext_bytes, indirect_writes = _pack_extents_for_inode(
+        bitmap, sb['fs_size'], raw_extents)
+    extents = _extents_with_offsets(raw_extents)
+    # Persist the bitmap before _add_dir_entry does its own independent
+    # read/allocate/write of it (same reason as create_file).
+    _write_bitmap(f, part_offset, sb, bitmap)
+
+    _write_data_to_extents(f, part_offset, extents, dir_data)
+    _write_raw_blocks(f, part_offset, indirect_writes)
+
+    now = int(time.time())
+    # A fresh directory starts with nlink 2: its own '.' plus the entry
+    # the parent is about to get.
+    _write_inode_packed(f, part_offset, sb, new_ino, mode, 2, uid, gid,
+                        len(dir_data), now, numextents, ext_bytes)
+
+    # Add the entry to the parent AFTER the child's inode/data are on
+    # disk, so a partial failure never leaves a dangling entry.
+    dir_extra_blocks = _add_dir_entry(f, part_offset, sb, parent_ino,
+                                      basename, new_ino)
+    # The child's '..' is a link to the parent, so the parent's nlink
+    # grows. _add_dir_entry may have rewritten the parent inode
+    # wholesale (if it had to grow), so re-patch from the on-disk value.
+    _bump_dir_nlink(f, part_offset, sb, parent_ino, 1)
+
+    table_blocks = sum(len(chunk) // EFS_BLOCK_SIZE for _, chunk in indirect_writes)
+    total_blocks_used = nblocks + table_blocks + dir_extra_blocks
+    _patch_superblock_counters(f, part_offset, sb,
+                               delta_tfree=-total_blocks_used,
+                               delta_tinode=-1)
+
+    return new_ino
+
+
 def write_file(f, part_offset, sb, path, data):
     """Overwrite an existing regular file's contents in place: frees its
     old data blocks (and any indirect-table blocks) back to the bitmap,
