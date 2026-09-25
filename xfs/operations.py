@@ -883,5 +883,16 @@ def _format_perms(mode):
         val = (mode >> shift) & 7
         chars += 'r' if val & 4 else '-'
         chars += 'w' if val & 2 else '-'
-        chars += 'x' if val & 1 else '-'
+        # setuid/setgid/sticky occupy the x position (lowercase, or
+        # s/S and t/T when the underlying x bit is unset) -- without
+        # this the bits are silently dropped and a 4755 binary reads
+        # as 0755.
+        special = (0o4000, 0o2000, 0o1000)[i]
+        if mode & special:
+            if val & 1:
+                chars += 's' if i < 2 else 't'
+            else:
+                chars += 'S' if i < 2 else 'T'
+        else:
+            chars += 'x' if val & 1 else '-'
     return chars

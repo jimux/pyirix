@@ -147,3 +147,9 @@ from pyirix.xfs.repair import (
     CheckReport,
     Finding,
 )
+
+# Non-blind disk-integrity audit (compare a candidate against a golden)
+from pyirix.xfs.compare import (
+    audit_against_golden,
+    XFS_STRUCTURE_SIGNATURES,
+)
