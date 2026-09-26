@@ -29,12 +29,17 @@ FORMAT_GE_MICROCODE = "ge-microcode"   # "EA\x00\x01" @0 (GE5/GE7)
 FORMAT_IO4_JFK4 = "io4-jfk4"           # "JFK4"@0: flat MIPS w/ 0x18 header
 FORMAT_IO4_JKSW = "io4-jksw"           # "JKSW"@0: Everest segment-loader blob
 FORMAT_MIPS_VECTOR = "mips-vector"     # classic SGI CPU PROM (IP4..IP30)
+FORMAT_TEXT = "text-data"              # plain text / data (not firmware)
 FORMAT_UNKNOWN = "unknown"
 
-#: Formats that are positively NOT a raw MIPS PROM image. A disassembler must
-#: refuse these (annotate) rather than present fabricated MIPS. ``sn-container``,
-#: ``shdr``, ``io4-jfk4`` and ``mips-vector`` ARE MIPS images; an unknown is left
-#: to the caller's old behaviour rather than refused on a guess.
+#: Formats that are positively NOT a raw MIPS PROM image, and so must be
+#: REFUSED (annotated) rather than disassembled -- presenting flat MIPS for any
+#: of these fabricates output. ``sn-container``, ``shdr``, ``io4-jfk4`` and
+#: ``mips-vector`` are the images that ARE MIPS. ``unknown`` is included: an
+#: image that fails every positive check cannot be vouched for, so it is refused
+#: with a named reason rather than guessed at (the 49 library files that land
+#: here are I2C/EEPROM chip dumps, graphics microcode, controller/EPROM/flash
+#: images and two plain-text files -- none is a CPU PROM).
 NON_MIPS_FORMATS = frozenset({
     FORMAT_MIPS_ELF,
     FORMAT_SYSCO_68K,
@@ -43,6 +48,8 @@ NON_MIPS_FORMATS = frozenset({
     FORMAT_MMSC_X86,
     FORMAT_GE_MICROCODE,
     FORMAT_IO4_JKSW,
+    FORMAT_TEXT,
+    FORMAT_UNKNOWN,
 })
 
 # O2/IP32 PROM outer container: magic 'PROM' at offset 0, 256-byte header, flash
@@ -86,7 +93,8 @@ _DESCRIPTIONS = {
     FORMAT_IO4_JFK4: "IO4 'JFK4' MIPS image (load 0x81800000, code@0x18)",
     FORMAT_IO4_JKSW: JKSW_DESCRIPTION,
     FORMAT_MIPS_VECTOR: "classic SGI MIPS CPU PROM",
-    FORMAT_UNKNOWN: "unrecognised firmware",
+    FORMAT_TEXT: "plain text / data (not firmware)",
+    FORMAT_UNKNOWN: "unrecognised firmware (not a MIPS CPU PROM)",
 }
 
 
@@ -112,6 +120,19 @@ def is_mips_vector(data: bytes) -> bool:
     if _word(data, 0) == 0 and ((_word(data, 4) >> 26) & 0x3F) in valid:
         return True
     return False
+
+
+def is_text_image(data: bytes) -> bool:
+    """True if *data* is essentially printable ASCII (a text/data file).
+
+    Catches the GR2 adjustment files (``adjntsc.bin``/``adjpal.bin``, which are
+    literally ``0x..`` hex text) so they are named as text rather than offered
+    to a disassembler.
+    """
+    if len(data) < 16:
+        return False
+    printable = sum(1 for b in data if 9 <= b <= 13 or 32 <= b <= 126)
+    return printable / len(data) >= 0.90
 
 
 def detect_prom_format(data: bytes) -> str:
@@ -146,6 +167,9 @@ def detect_prom_format(data: bytes) -> str:
 
     if len(data) >= 0x1C and data[0x18:0x1C] == b'\x5a\xa5\xa5\x5a':
         return FORMAT_MMSC_X86
+
+    if is_text_image(data):
+        return FORMAT_TEXT
 
     if is_mips_vector(data):
         return FORMAT_MIPS_VECTOR
