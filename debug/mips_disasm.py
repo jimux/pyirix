@@ -71,6 +71,12 @@ class MipsDisassembler:
         """
         Disassemble MIPS binary data.
 
+        Gap-tolerant: capstone's linear sweep stops at the first word it cannot
+        decode, so a plain `cs.disasm` over a whole image silently truncates at
+        the first embedded data blob. When that happens this skips the
+        undecodable word as a `.word 0x........` line and resumes, so a scan
+        covers the whole input instead of returning a false negative.
+
         Args:
             data: Binary data to disassemble
             base_address: Base address for disassembly
@@ -82,41 +88,68 @@ class MipsDisassembler:
         """
         lines = []
         count = 0
+        i = 0
+        n = len(data)
 
-        for insn in self.cs.disasm(data, base_address):
-            offset = insn.address - base_address
-
-            bytes_hex = insn.bytes.hex()
-            mnemonic = insn.mnemonic
-            op_str = insn.op_str
-
-            annotation = ""
-            is_branch = False
-            branch_target = None
-
-            if annotate:
-                annotation = self._annotate_instruction(insn)
-
-            # Detect branch/jump instructions
-            if mnemonic in ('b', 'beq', 'bne', 'bgtz', 'blez', 'bltz', 'bgez',
-                           'j', 'jal', 'jr', 'jalr', 'beql', 'bnel'):
-                is_branch = True
-                branch_target = self._extract_branch_target(insn)
-
-            lines.append(DisasmLine(
-                address=insn.address,
-                offset=offset,
-                bytes_hex=bytes_hex,
-                mnemonic=mnemonic,
-                op_str=op_str,
-                annotation=annotation,
-                is_branch=is_branch,
-                branch_target=branch_target
-            ))
-
-            count += 1
+        while i < n:
             if max_instructions > 0 and count >= max_instructions:
                 break
+
+            decoded_any = False
+            for insn in self.cs.disasm(data[i:], base_address + i):
+                decoded_any = True
+
+                offset = insn.address - base_address
+                bytes_hex = insn.bytes.hex()
+                mnemonic = insn.mnemonic
+                op_str = insn.op_str
+
+                annotation = ""
+                is_branch = False
+                branch_target = None
+
+                if annotate:
+                    annotation = self._annotate_instruction(insn)
+
+                # Detect branch/jump instructions
+                if mnemonic in ('b', 'beq', 'bne', 'bgtz', 'blez', 'bltz', 'bgez',
+                               'j', 'jal', 'jr', 'jalr', 'beql', 'bnel'):
+                    is_branch = True
+                    branch_target = self._extract_branch_target(insn)
+
+                lines.append(DisasmLine(
+                    address=insn.address,
+                    offset=offset,
+                    bytes_hex=bytes_hex,
+                    mnemonic=mnemonic,
+                    op_str=op_str,
+                    annotation=annotation,
+                    is_branch=is_branch,
+                    branch_target=branch_target
+                ))
+
+                count += 1
+                i = insn.address - base_address + (insn.size or 4)
+                if max_instructions > 0 and count >= max_instructions:
+                    break
+
+            if max_instructions > 0 and count >= max_instructions:
+                break
+
+            if not decoded_any:
+                # Undecodable word (embedded data): emit it verbatim and move on
+                # rather than stopping the whole scan here.
+                word_bytes = data[i:i + 4]
+                word = int.from_bytes(word_bytes.ljust(4, b'\x00'), 'big')
+                lines.append(DisasmLine(
+                    address=base_address + i,
+                    offset=i,
+                    bytes_hex=word_bytes.hex(),
+                    mnemonic='.word',
+                    op_str=f'0x{word:08x}',
+                ))
+                count += 1
+                i += 4
 
         return lines
 
@@ -290,7 +323,24 @@ def disassemble_prom(
         mode = get_cpu_mode(meta.platform)
 
     disasm = MipsDisassembler(mode)
-    return disasm.disassemble(data_slice, base_addr, max_instructions, annotate)
+    lines = disasm.disassemble(data_slice, base_addr, max_instructions, annotate)
+
+    # Coverage guard (permanent): a linear sweep that stops early returns a
+    # silent false negative. The gap-tolerant walk above should always cover the
+    # whole slice; if a future change reintroduces truncation, say so.
+    requested = len(data_slice)
+    covered = disassembly_coverage(lines)
+    if max_instructions == 0 and covered < requested:
+        print(f"disassemble_prom: {filename}: disassembly truncated at "
+              f"0x{base_addr + covered:08x} ({covered}/{requested} bytes)",
+              file=sys.stderr)
+
+    return lines
+
+
+def disassembly_coverage(lines: List[DisasmLine]) -> int:
+    """Bytes of input consumed by a disassembly listing (sum of line sizes)."""
+    return sum(len(line.bytes_hex) // 2 for line in lines)
 
 
 def format_disassembly(lines: List[DisasmLine], show_bytes: bool = True) -> str:
@@ -298,7 +348,7 @@ def format_disassembly(lines: List[DisasmLine], show_bytes: bool = True) -> str:
     Format disassembly output.
 
     Args:
-        lines: List of DisasmLine objects
+        lines: Disassembly lines
         show_bytes: Include hex bytes in output
 
     Returns:
