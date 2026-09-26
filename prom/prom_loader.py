@@ -15,6 +15,10 @@ from .config import (
     PROM_DIR, PROM_BASE, ENTRY_POINT_OFFSET,
     detect_platform, PLATFORMS, prom_offset_to_addr
 )
+from .prom_format import (
+    NON_MIPS_FORMATS, FORMAT_SN_CONTAINER, FORMAT_MIPS_VECTOR,
+    detect_prom_format, describe_prom_format,
+)
 
 
 @dataclass
@@ -125,6 +129,7 @@ class PromCodeImage:
     is_container: bool = False
     container: Optional[SN0ContainerInfo] = None
     mapping_note: str = ""
+    format: str = FORMAT_MIPS_VECTOR   # see pyirix.prom.prom_format
 
 
 # Cache for loaded PROM data
@@ -409,12 +414,26 @@ def extract_prom_code(data: bytes, endian: str = "big") -> PromCodeImage:
                     info.module_name, info.code_offset, info.code_size,
                     info.load_address, base, comp_name)
         return PromCodeImage(code, base, info.code_offset, info.code_size,
-                             True, info, note)
+                             True, info, note, FORMAT_SN_CONTAINER)
+
+    # Not an SN container. Before treating the file as a flat MIPS image (the
+    # old behaviour), positively identify the format: an image that is a
+    # different container (O2 SHDR, IO4 JKSW/JFK4) or not MIPS at all (x86
+    # BIOS, 68K, ARM, graphics microcode, MIPS ELF) must NOT be disassembled
+    # from offset 0 as if it were a CPU PROM -- that fabricates output. Refuse
+    # with a specific message; every caller already handles ValueError.
+    fmt = detect_prom_format(data)
+    if fmt in NON_MIPS_FORMATS:
+        raise ValueError(
+            "{} [{}]: not a raw MIPS CPU PROM. Refusing to disassemble it "
+            "as a flat image at 0x{:08x}.".format(
+                describe_prom_format(fmt), fmt, PROM_BASE))
 
     code = data
     if endian != "big":
         code = normalize_data(data, endian)
-    return PromCodeImage(code, PROM_BASE, 0, len(code), False, None, "")
+    return PromCodeImage(code, PROM_BASE, 0, len(code), False, None, "",
+                         fmt)
 
 
 def load_prom_code(filename: str, use_cache: bool = True) -> Optional[PromCodeImage]:
@@ -462,18 +481,13 @@ def extract_entry_point(data: bytes, endian: str) -> int:
 
 def detect_shdr_header(data: bytes) -> bool:
     """
-    Detect SHDR (O2/Octane) PROM header format.
+    Detect SHDR (O2/IP32) PROM header format.
 
-    These PROMs have a different header structure.
+    The magic is ``"SHDR"`` at file offset **0x08** (not 0): the O2 image begins
+    ``10 00 00 11 00 00 00 00 53 48 44 52``. Delegates to the format detector so
+    there is one source of truth.
     """
-    if len(data) < 16:
-        return False
-
-    # SHDR magic at start
-    if data[0:4] == b'SHDR':
-        return True
-
-    return False
+    return detect_prom_format(data) == "shdr"
 
 
 def extract_vectors(data: bytes, endian: str) -> Dict[str, int]:
@@ -669,7 +683,7 @@ def extract_strings(data: bytes, min_length: int = 4) -> List[Tuple[int, str]]:
         List of (offset, string) tuples
     """
     strings = []
-    current = []
+    current: List[str] = []
     start_offset = 0
 
     for i, byte in enumerate(data):
