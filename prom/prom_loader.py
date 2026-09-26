@@ -71,6 +71,8 @@ SN0_VERSION_ADDR = 0x48
 SN0_TOTAL_SIZE_ADDR = 0x50
 SN0_NUMSEGS_ADDR = 0x78
 SN0_SEGS_OFFSET = 0x80
+SN0_MAXSEGS = 16                              # PROM_MAXSEGS in sys/SN/promhdr.h
+SN0_SEG_DESC_SIZE = 0x80                       # sizeof(promseg_t)
 # First promseg_t descriptor (offsets absolute in the file).
 SN0_MODULE_NAME_ADDR = SN0_SEGS_OFFSET        # name[16]
 SN0_SEG_FLAGS_ADDR = 0x90
@@ -98,6 +100,18 @@ PROM_PHYS_END = 0x20000000
 
 
 @dataclass
+class SN0Segment:
+    """One `promseg_t` descriptor from an SN0/SN1 container."""
+    name: str
+    flags: int
+    offset: int
+    entry: int
+    load_address: int
+    length: int
+    length_c: int
+
+
+@dataclass
 class SN0ContainerInfo:
     """Parsed SN0/SN1 (`promhdr_t`) container header (first segment)."""
     module_name: str
@@ -114,6 +128,7 @@ class SN0ContainerInfo:
     sum: int
     sum_c: int
     memlength: int
+    segments: List[SN0Segment] = field(default_factory=list)
 
 
 @dataclass
@@ -268,6 +283,21 @@ def is_sn0_container(data: bytes) -> bool:
     return data[SN0_MAGIC_OFFSET:end] == SN0_MAGIC
 
 
+def _parse_segment(data: bytes, base: int) -> SN0Segment:
+    """Parse one 0x80-byte ``promseg_t`` descriptor at absolute *base*."""
+    name_raw = data[base:base + 16]
+    name = name_raw.split(b'\x00', 1)[0].decode('ascii', errors='replace')
+    return SN0Segment(
+        name=name,
+        flags=read_u64_be(data, base + 0x10),
+        offset=read_u64_be(data, base + 0x18),
+        entry=read_u64_be(data, base + 0x20),
+        load_address=read_u64_be(data, base + 0x28),
+        length=read_u64_be(data, base + 0x30),
+        length_c=read_u64_be(data, base + 0x38),
+    )
+
+
 def parse_sn0_container(data: bytes) -> Optional[SN0ContainerInfo]:
     """Parse an SN0/SN1 container header exactly as the IP27 QEMU loader reads it.
 
@@ -281,12 +311,21 @@ def parse_sn0_container(data: bytes) -> Optional[SN0ContainerInfo]:
     name_raw = data[SN0_MODULE_NAME_ADDR:SN0_MODULE_NAME_ADDR + 16]
     module_name = name_raw.split(b'\x00', 1)[0].decode('ascii', errors='replace')
 
+    numsegs = read_u64_be(data, SN0_NUMSEGS_ADDR)
+    segments: List[SN0Segment] = []
+    if 1 <= numsegs <= SN0_MAXSEGS:
+        for i in range(numsegs):
+            base = SN0_SEGS_OFFSET + i * SN0_SEG_DESC_SIZE
+            if base + SN0_SEG_DESC_SIZE > len(data):
+                break
+            segments.append(_parse_segment(data, base))
+
     return SN0ContainerInfo(
         module_name=module_name,
         revision=read_u64_be(data, SN0_REVISION_ADDR),
         version=read_u64_be(data, SN0_VERSION_ADDR),
         total_size=read_u64_be(data, SN0_TOTAL_SIZE_ADDR),
-        numsegs=read_u64_be(data, SN0_NUMSEGS_ADDR),
+        numsegs=numsegs,
         flags=read_u64_be(data, SN0_SEG_FLAGS_ADDR),
         code_offset=read_u64_be(data, SN0_CODE_OFFSET_ADDR),
         entry=read_u64_be(data, SN0_ENTRY_ADDR),
@@ -296,6 +335,7 @@ def parse_sn0_container(data: bytes) -> Optional[SN0ContainerInfo]:
         sum=read_u64_be(data, SN0_SUM_ADDR),
         sum_c=read_u64_be(data, SN0_SUM_C_ADDR),
         memlength=read_u64_be(data, SN0_MEMLENGTH_ADDR),
+        segments=segments,
     )
 
 
@@ -411,10 +451,19 @@ def extract_prom_code(data: bytes, endian: str = "big") -> PromCodeImage:
             code = normalize_data(code, endian)
         base = prom_code_base(info.load_address)
         comp_name = "none" if comp == SN0_SFLAG_NONE else "gzip"
+        seg_names = ", ".join(s.name for s in info.segments) or info.module_name
+        seg_desc = "{} segment(s) [{}]".format(
+            len(info.segments) or 1, seg_names)
+        extra = ""
+        if info.total_size and info.total_size != len(data):
+            extra = " (total_size 0x{:x} != file 0x{:x})".format(
+                info.total_size, len(data))
+        if len(info.segments) > 1:
+            extra += " (disassembling segment 0)"
         note = ("SN0 container: module {}, code_off 0x{:x}, size 0x{:x}, "
-                "loadaddr 0x{:016x}, base 0x{:08x}, compression {}").format(
+                "loadaddr 0x{:016x}, base 0x{:08x}, compression {}, {}{}").format(
                     info.module_name, info.code_offset, info.code_size,
-                    info.load_address, base, comp_name)
+                    info.load_address, base, comp_name, seg_desc, extra)
         return PromCodeImage(code, base, info.code_offset, info.code_size,
                              True, info, note, FORMAT_SN_CONTAINER)
 
@@ -530,11 +579,25 @@ def extract_vectors(data: bytes, endian: str) -> Dict[str, int]:
     Extract known vectors from PROM.
 
     Returns dict mapping vector name to address.
+
+    Only the fields that name an *address* are range-checked: a "vector" must
+    fall in MIPS kernel/PROM space (KSEG0/KSEG1, ``0x80000000..0xc0000000``).
+    That range is the whole point -- for PROMs whose header is not the classic
+    8-word layout (IP26 begins ``0x40a06800``, IP28 begins with a zero word) the
+    same offsets hold instructions or data, and emitting e.g.
+    ``reinit_vector=0x40ac3000`` would present an instruction as an address.
+    Implausible ones are omitted rather than fabricated.
     """
     vectors = {}
     read_fn = read_u32_be if endian == "big" else read_u32_le
 
-    # Vector table locations (offsets and names)
+    # Vector table locations (offsets and names). The address-named fields are
+    # validated; the scalar fields (version/length/checksum/platform_id/flags)
+    # are not addresses and are kept as-is.
+    address_fields = {
+        "reset_vector", "entry_point", "printf_vector", "restart_vector",
+        "reinit_vector", "reboot_vector", "bss_start", "bss_end",
+    }
     vector_offsets = [
         (0x00, "reset_vector"),
         (0x04, "version"),
@@ -554,8 +617,11 @@ def extract_vectors(data: bytes, endian: str) -> Dict[str, int]:
     for offset, name in vector_offsets:
         if offset + 4 <= len(data):
             val = read_fn(data, offset)
-            if val != 0:
-                vectors[name] = val
+            if val == 0:
+                continue
+            if name in address_fields and not (0x80000000 <= val < 0xc0000000):
+                continue
+            vectors[name] = val
 
     return vectors
 
