@@ -547,6 +547,7 @@ def get_prom_metadata(filename: str, use_cache: bool = True) -> Optional[PromMet
     # (where they are the container header, i.e. normally zero/empty).
     is_container = is_sn0_container(data)
     code_offset = code_size = load_address = code_base = 0
+    container_entry = 0
     mapping_note = ""
     if is_container:
         try:
@@ -556,14 +557,18 @@ def get_prom_metadata(filename: str, use_cache: bool = True) -> Optional[PromMet
             code_base = code.load_address
             load_address = code.container.load_address if code.container else 0
             mapping_note = code.mapping_note
+            if code.container and code.container.entry:
+                container_entry = prom_code_base(code.container.entry)
         except ValueError:
             # Leave fields at 0; extract_prom_code is the strict entry point.
             pass
 
-    # Extract entry point. The classic entry-point offset does not exist in a
-    # container header, so a container reports the PROM base rather than a
-    # header word misread as an address.
-    entry_point = PROM_BASE if is_container else extract_entry_point(data, endian)
+    # Extract entry point. A container's classic entry-point offset is absent;
+    # its real entry is the segment `entry` field (0xA0), mapped to KSEG1.
+    if is_container:
+        entry_point = container_entry or PROM_BASE
+    else:
+        entry_point = extract_entry_point(data, endian)
 
     # Extract part number
     part_number = extract_part_number(filename)
