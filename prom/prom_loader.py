@@ -16,9 +16,10 @@ from .config import (
     detect_platform, PLATFORMS, prom_offset_to_addr
 )
 from .prom_format import (
-    NON_MIPS_FORMATS, FORMAT_SN_CONTAINER, FORMAT_SHDR, FORMAT_MIPS_VECTOR,
+    NON_MIPS_FORMATS, FORMAT_SN_CONTAINER, FORMAT_SHDR, FORMAT_IO4_JFK4,
+    FORMAT_MIPS_VECTOR, JFK4_CODE_OFFSET,
     detect_prom_format, describe_prom_format,
-    shdr_flash_offset, shdr_segment_count,
+    shdr_flash_offset, shdr_segment_count, jfk4_load_address, jfk4_code_size,
 )
 
 
@@ -438,6 +439,25 @@ def extract_prom_code(data: bytes, endian: str = "big") -> PromCodeImage:
             flash = normalize_data(flash, endian)
         return PromCodeImage(flash, PROM_BASE, off, len(flash), False, None,
                              note, FORMAT_SHDR)
+    if fmt == FORMAT_IO4_JFK4:
+        # IO4 'JFK4': a 0x18-byte header then a flat MIPS image. Fields are
+        # self-consistent on all 3 library files (load==entry, and the size at
+        # 0x0c equals file_size-0x18 exactly). Slice it; never guess if it does
+        # not hold, so a malformed copy is refused rather than misparsed.
+        off = JFK4_CODE_OFFSET
+        size = jfk4_code_size(data)
+        base = jfk4_load_address(data)
+        if size <= 0 or off + size > len(data):
+            raise ValueError(
+                "IO4 'JFK4' image has an inconsistent code size (0x{:x}); "
+                "refusing to slice it.".format(size))
+        code = data[off:off + size]
+        note = ("IO4 'JFK4' image: code offset 0x{:x}, size 0x{:x}, load "
+                "0x{:08x}").format(off, size, base)
+        if endian != "big":
+            code = normalize_data(code, endian)
+        return PromCodeImage(code, base, off, size, False, None, note,
+                             FORMAT_IO4_JFK4)
     if fmt in NON_MIPS_FORMATS:
         raise ValueError(
             "{} [{}]: not a raw MIPS CPU PROM. Refusing to disassemble it "

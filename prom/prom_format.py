@@ -26,15 +26,15 @@ FORMAT_X86_BIOS = "x86-bios"           # \x55\xaa @0 (Voyager/ATI)
 FORMAT_KONA_ARM = "kona-arm"           # 0xbadc0ffe @0 (InfiniteReality)
 FORMAT_MMSC_X86 = "mmsc-x86"           # 0x5aa5a55a @0x18 (MMSC)
 FORMAT_GE_MICROCODE = "ge-microcode"   # "EA\x00\x01" @0 (GE5/GE7)
-FORMAT_IO4_CONTAINER = "io4-container"  # "JKSW"/"JFK4" @0
+FORMAT_IO4_JFK4 = "io4-jfk4"           # "JFK4"@0: flat MIPS w/ 0x18 header
+FORMAT_IO4_JKSW = "io4-jksw"           # "JKSW"@0: Everest segment-loader blob
 FORMAT_MIPS_VECTOR = "mips-vector"     # classic SGI CPU PROM (IP4..IP30)
 FORMAT_UNKNOWN = "unknown"
 
 #: Formats that are positively NOT a raw MIPS PROM image. A disassembler must
 #: refuse these (annotate) rather than present fabricated MIPS. ``sn-container``,
-#: ``shdr`` and ``mips-vector`` ARE MIPS images (SHDR/O2 flash is flat-executable
-#: at 0xBFC00000); an unknown is left to the caller's old behaviour rather than
-#: refused on a guess.
+#: ``shdr``, ``io4-jfk4`` and ``mips-vector`` ARE MIPS images; an unknown is left
+#: to the caller's old behaviour rather than refused on a guess.
 NON_MIPS_FORMATS = frozenset({
     FORMAT_MIPS_ELF,
     FORMAT_SYSCO_68K,
@@ -42,7 +42,7 @@ NON_MIPS_FORMATS = frozenset({
     FORMAT_KONA_ARM,
     FORMAT_MMSC_X86,
     FORMAT_GE_MICROCODE,
-    FORMAT_IO4_CONTAINER,
+    FORMAT_IO4_JKSW,
 })
 
 # O2/IP32 PROM outer container: magic 'PROM' at offset 0, 256-byte header, flash
@@ -55,13 +55,22 @@ SHDR_SEG_MAGIC = b'SHDR'
 SHDR_SEG_PAGE = 256
 SHDR_SEG_HDR = 0x40
 
+# IO4 'JFK4' image: magic@0, -, loadAddr@0x08, size@0x0c, entry@0x10, ver@0x14,
+# code@0x18. Established by measurement over the 3 library files (load==entry,
+# and size == file_size - 0x18 exactly for each; the code is coherent MIPS).
+JFK4_CODE_OFFSET = 0x18
+JFK4_LOAD_ADDR = 0x81800000
+JKSW_DESCRIPTION = ("IO4 'JKSW' Everest PROM Segment Loader: a segmented blob "
+                    "with a segment table; the segment-table layout is not yet "
+                    "established")
+
 _MAGIC_AT_ZERO = (
     (b'\x7fELF', FORMAT_MIPS_ELF),
     (b'ESTFBINR', FORMAT_SYSCO_68K),
     (b'\x55\xaa', FORMAT_X86_BIOS),
     (b'\xba\xdc\x0f\xfe', FORMAT_KONA_ARM),
-    (b'JKSW', FORMAT_IO4_CONTAINER),
-    (b'JFK4', FORMAT_IO4_CONTAINER),
+    (b'JKSW', FORMAT_IO4_JKSW),
+    (b'JFK4', FORMAT_IO4_JFK4),
     (b'EA\x00\x01', FORMAT_GE_MICROCODE),
 )
 
@@ -74,7 +83,8 @@ _DESCRIPTIONS = {
     FORMAT_KONA_ARM: "ARM transport processor firmware (KONA)",
     FORMAT_MMSC_X86: "MMSC controller firmware (x86, 5aa5a55a@0x18)",
     FORMAT_GE_MICROCODE: "GE5/GE7 graphics microcode",
-    FORMAT_IO4_CONTAINER: "IO4 firmware container (JKSW/JFK4)",
+    FORMAT_IO4_JFK4: "IO4 'JFK4' MIPS image (load 0x81800000, code@0x18)",
+    FORMAT_IO4_JKSW: JKSW_DESCRIPTION,
     FORMAT_MIPS_VECTOR: "classic SGI MIPS CPU PROM",
     FORMAT_UNKNOWN: "unrecognised firmware",
 }
@@ -146,6 +156,16 @@ def detect_prom_format(data: bytes) -> str:
 def describe_prom_format(fmt: str) -> str:
     """Human-readable name for a detected format."""
     return _DESCRIPTIONS.get(fmt, fmt)
+
+
+def jfk4_load_address(data: bytes) -> int:
+    """Load address of an IO4 'JFK4' image (field at 0x08)."""
+    return int.from_bytes(data[0x08:0x0C], 'big') if len(data) >= 0x10 else 0
+
+
+def jfk4_code_size(data: bytes) -> int:
+    """Code size of an IO4 'JFK4' image (field at 0x0c); 0 if unreadable."""
+    return int.from_bytes(data[0x0C:0x10], 'big') if len(data) >= 0x10 else 0
 
 
 def shdr_flash_offset(data: bytes) -> int:
