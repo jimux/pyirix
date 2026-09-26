@@ -613,25 +613,37 @@ def extract_vectors(data: bytes, endian: str) -> Dict[str, int]:
     """
     Extract the classic SGI PROM header's jump table as real addresses.
 
-    The first 0x100 bytes are 32-bit ``j`` instructions (on an 8-byte stride,
-    the intervening words being delay-pad zeroes): entry 0 jumps to the reset
-    entry (``0xbfc003c0`` on every classic PROM measured), the rest to
-    per-machine service handlers. A vector is emitted only when its word
-    decodes as a jump into PROM space -- so the value is a real address, never
-    an instruction presented as one. Returns ``{}`` when the header is not this
-    table (IP26 begins ``0x40a06800``; its layout is unestablished).
+    The header is a RUN of 32-bit ``j`` instructions on an 8-byte stride that
+    begins at the reset entry (file offset 0; or +4 when offset 0 is a pad, as on
+    IP28). Entry 0 jumps to the reset entry (``0xbfc003c0`` on every classic PROM
+    measured), the rest to per-machine service handlers. The run ends at the
+    first slot that is not a jump -- so a PROM that merely CONTAINS jumps later
+    in its boot code (IP26 begins with CP0 setup, `dmtc0`/`ssnop`) does not have
+    those jumps reported as vectors. A vector is emitted only when its word
+    decodes as a jump into PROM space; returns ``{}`` when there is no such run
+    (i.e. no classic header -- IP26 has none).
     """
     vectors: Dict[str, int] = {}
     read_fn = read_u32_be if endian == "big" else read_u32_le
 
-    for off in range(0, 0x100, 4):
-        if off + 4 > len(data):
+    start = None
+    for off in (0x00, 0x04):
+        if off + 4 <= len(data):
+            t = _decode_jump_target(read_fn(data, off))
+            if t is not None and _in_prom_space(t):
+                start = off
+                break
+    if start is None:
+        return {}
+
+    off = start
+    while off + 4 <= len(data) and off < start + 0x100:
+        t = _decode_jump_target(read_fn(data, off))
+        if t is None or not _in_prom_space(t):
             break
-        target = _decode_jump_target(read_fn(data, off))
-        if target is None or not _in_prom_space(target):
-            continue
-        name = "reset_vector" if off == 0 else "vector_0x{:02x}".format(off)
-        vectors[name] = target
+        name = "reset_vector" if off == start else "vector_0x{:02x}".format(off)
+        vectors[name] = t
+        off += 8
 
     return vectors
 
