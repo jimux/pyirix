@@ -3,10 +3,11 @@
 Migrated from sgi_mcp/sgi_fs.py lines 74-232.
 """
 
+import json
 import os
+import shutil
 import struct
 import subprocess
-import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -14,11 +15,17 @@ from pyirix.xfs.constants import (
     SECTOR_SIZE, QCOW2_MAGIC, VHMAGIC, NVDIR, NPARTAB,
     PTYPE_EFS, PTYPE_SYSV, PTYPE_XFS, XFS_SB_MAGIC,
 )
+from pyirix.nbd import QemuNbd
+from pyirix.tmpdir import fsync_path, tmp_dir
 
 # EFS magic (only needed for detect_filesystem)
 _EFS_MAGIC = 0x072959
 _EFS_MAGIC_NEW = 0x07295A
 _EFS_BLOCK_SIZE = 512
+
+# qemu-img convert timeout: unset means no fixed limit (the old hard 120 s
+# could kill a large/slow write-back mid-convert). Override with seconds.
+_QEMU_IMG_TIMEOUT_ENV = "PYIRIX_QEMU_IMG_TIMEOUT"
 
 
 def _find_qemu_img():
@@ -34,6 +41,14 @@ def _find_qemu_img():
     return 'qemu-img'
 
 
+def _have_qemu_nbd():
+    """True if qemu-nbd is available (enables the in-place NBD read/write path)."""
+    env = os.environ.get("PYIRIX_QEMU_NBD")
+    if env:
+        return shutil.which(env) is not None
+    return shutil.which('qemu-nbd') is not None
+
+
 def is_qcow2(path):
     """Check if file is qcow2 format."""
     try:
@@ -43,43 +58,135 @@ def is_qcow2(path):
         return False
 
 
+def _convert_timeout():
+    """qemu-img timeout in seconds, or None for no limit."""
+    raw = os.environ.get(_QEMU_IMG_TIMEOUT_ENV)
+    if not raw:
+        return None
+    try:
+        val = float(raw)
+    except ValueError:
+        return None
+    return val if val > 0 else None
+
+
+def _run_qemu_img(args, cwd=None):
+    """Run qemu-img, surfacing its stderr on failure."""
+    try:
+        return subprocess.run(
+            args, check=True, capture_output=True, cwd=cwd,
+            timeout=_convert_timeout()
+        )
+    except subprocess.CalledProcessError as exc:
+        err = exc.stderr.decode('utf-8', 'replace').strip() if exc.stderr else ''
+        raise RuntimeError(f"qemu-img failed ({' '.join(args)}): {err}") from exc
+
+
+def qcow2_backing(path, qemu_img=None):
+    """Return (backing_filename, backing_format) for a qcow2, or (None, None).
+
+    A raw->qcow2 write-back that drops these silently flattens a golden-fork
+    overlay into a standalone multi-GB image.
+    """
+    qemu_img = qemu_img or _find_qemu_img()
+    try:
+        out = _run_qemu_img([qemu_img, 'info', '--output=json', str(path)]).stdout
+        info = json.loads(out)
+    except (RuntimeError, ValueError, OSError):
+        return None, None
+    backing = info.get('backing-filename')
+    fmt = info.get('backing-filename-format')
+    if backing and not fmt:
+        try:
+            binfo = json.loads(
+                _run_qemu_img([qemu_img, 'info', '--output=json', str(backing)]).stdout)
+            fmt = binfo.get('format')
+        except (RuntimeError, ValueError, OSError):
+            fmt = None
+    return backing, fmt
+
+
 @contextmanager
 def open_disk_image(path, writable=False):
     """Open a disk image for reading/writing. Handles raw and qcow2.
 
     Yields an open file object positioned at byte 0.
-    For qcow2: converts to temporary raw, writes back on close if writable.
+    For qcow2: converts to a temporary raw under the workspace scratch dir
+    (never the RAM /tmp), and writes back atomically on close if writable.
+
+    Write-back is crash-safe and overlay-preserving:
+      * the new qcow2 is built at ``<path>.tmp.<pid>`` in the same directory,
+        fsync'd, then ``os.replace``d onto the original (a kill mid-convert
+        leaves the original byte-identical);
+      * if the original is an overlay, ``-B/-F`` keep its backing reference
+        instead of flattening it.
     """
     path = str(path)
     if not os.path.exists(path):
         raise FileNotFoundError(f"Disk image not found: {path}")
 
     if is_qcow2(path):
-        qemu_img = _find_qemu_img()
-        tmpdir = tempfile.mkdtemp(prefix='xfs_')
-        tmp_raw = os.path.join(tmpdir, 'disk.raw')
-        try:
-            subprocess.run(
-                [qemu_img, 'convert', '-O', 'raw', path, tmp_raw],
-                check=True, capture_output=True, timeout=120
-            )
-            with open(tmp_raw, 'r+b' if writable else 'rb') as f:
+        if _have_qemu_nbd():
+            # Preferred: in-place NBD export — no temp copy, overlay-preserving
+            # writes, QEMU image locking enforced by qemu-nbd.
+            with QemuNbd(path, readonly=not writable) as f:
                 yield f
-                if writable:
-                    f.flush()
-                    subprocess.run(
-                        [qemu_img, 'convert', '-O', 'qcow2', tmp_raw, path],
-                        check=True, capture_output=True, timeout=120
-                    )
-        finally:
-            try:
-                os.unlink(tmp_raw)
-                os.rmdir(tmpdir)
-            except OSError:
-                pass
+            return
+        # Fallback (no qemu-nbd): atomic raw round-trip under the workspace tmp.
+        with _open_qcow2_via_convert(path, writable) as f:
+            yield f
     else:
         with open(path, 'r+b' if writable else 'rb') as f:
             yield f
+
+
+@contextmanager
+def _open_qcow2_via_convert(path, writable):
+    """Fallback qcow2 open via a raw temp copy (used only when qemu-nbd is absent).
+
+    Crash-safe and overlay-preserving: the new image is built at
+    ``<path>.tmp.<pid>`` in the same directory, fsync'd, then ``os.replace``d
+    onto the original; ``-B/-F`` keep an overlay's backing reference.
+    """
+    qemu_img = _find_qemu_img()
+    tmpdir = tmp_dir(prefix='xfs_')
+    tmp_raw = os.path.join(tmpdir, 'disk.raw')
+    try:
+        _run_qemu_img([qemu_img, 'convert', '-O', 'raw', path, tmp_raw])
+        with open(tmp_raw, 'r+b' if writable else 'rb') as f:
+            yield f
+            if writable:
+                f.flush()
+                fsync_path(tmp_raw)
+                backing, backing_fmt = qcow2_backing(path, qemu_img)
+                dst_tmp = f"{path}.tmp.{os.getpid()}"
+                args = [qemu_img, 'convert', '-O', 'qcow2']
+                if backing:
+                    if not backing_fmt:
+                        raise RuntimeError(
+                            f"refusing to write back {path}: overlay backing "
+                            f"{backing!r} has no known format (would flatten it)")
+                    args += ['-B', backing, '-F', backing_fmt]
+                args += [tmp_raw, dst_tmp]
+                try:
+                    # cwd = overlay dir so a relative backing string resolves
+                    # exactly as it did when the overlay was created.
+                    _run_qemu_img(args, cwd=os.path.dirname(os.path.abspath(path)) or None)
+                    fsync_path(dst_tmp)
+                    os.replace(dst_tmp, path)
+                    fsync_path(path)
+                except BaseException:
+                    try:
+                        os.unlink(dst_tmp)
+                    except OSError:
+                        pass
+                    raise
+    finally:
+        try:
+            os.unlink(tmp_raw)
+            os.rmdir(tmpdir)
+        except OSError:
+            pass
 
 
 def read_vh(f):

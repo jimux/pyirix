@@ -3030,8 +3030,8 @@ def cmd_build_dist(args):
     extracts dist/ files from each, deduplicates (later images take priority),
     and builds a combined EFS disk image ready for IRIX inst.
     """
-    import tempfile
     import shutil
+    from pyirix.tmpdir import tmp_dir
     from pyirix.dist.combine import (extract_dist_from_image, collect_dist_files,
                               EFSImageBuilder, build_volume_header,
                               EFS_PARTITION_START, EFS_BLOCK_SIZE,
@@ -3086,7 +3086,7 @@ def cmd_build_dist(args):
 
     # Step 3: Extract dist/ files from each image to temp dirs
     # Order: process in resolved order (FamilyResolver already orders them)
-    temp_base = tempfile.mkdtemp(prefix="irix_build_dist_")
+    temp_base = tmp_dir(prefix="irix_build_dist_")
     temp_dirs = []  # [(label, Path)]
 
     try:

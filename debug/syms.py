@@ -21,7 +21,8 @@ Usage:
   python3 kernel_syms.py drift --elf /workspace/_golden_extract/unix \
       --json /workspace/ip54_kernel_symbols_disk.json
 """
-import argparse, json, os, re, subprocess, sys, tempfile
+import argparse, json, os, re, subprocess, sys
+from pyirix.tmpdir import tmp_dir
 
 PROBE = ["splx", "idevGenPtrEvent", "idev_rput", "qcntlpoll", "schedule",
          "vfault", "cmn_err", "shmiq_sproc"]
@@ -52,7 +53,7 @@ def extract_unix(image, kpath):
     from pyirix.xfs.inode import read_inode, read_file_data
     from pyirix.xfs.operations import resolve_path
 
-    dest = tempfile.mkdtemp(prefix="kunix_")
+    dest = tmp_dir(prefix="kunix_")
     with open_disk_image(image) as f:
         part = find_xfs_partition(f)
         if not part:

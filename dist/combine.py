@@ -796,7 +796,9 @@ def cmd_build(args):
 
     # Build EFS image to temp location, then prepend volume header
     import tempfile
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.efs') as tmp:
+    from pyirix.tmpdir import tmp_root
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.efs',
+                                     dir=str(tmp_root())) as tmp:
         tmp_path = tmp.name
 
     try:

@@ -78,6 +78,7 @@ from pyirix.dist.parser import parse_spec
 from pyirix.efs.extract import extract_efs
 from pyirix.iso.extract import extract_recursive as iso_extract_recursive
 from pyirix.iso.extract import is_iso9660
+from pyirix.tmpdir import tmp_dir, tmp_root
 
 DEFAULT_HASH = "sha256"
 SPEC_MAGIC = b"pd001"
@@ -486,7 +487,7 @@ def _data_root_for(output_dir: Path, idb_dir_rel: str, product: str, retain: boo
     if retain:
         yield output_dir / "data" / idb_dir_rel / product
     else:
-        with tempfile.TemporaryDirectory(prefix="media_walker_noretain_") as tmp:
+        with tempfile.TemporaryDirectory(prefix="media_walker_noretain_", dir=str(tmp_root())) as tmp:
             yield Path(tmp)
 
 
@@ -684,7 +685,7 @@ def process_root(staged_root: Path, output_dir: Path, hash_algo: str = DEFAULT_H
 
     for tardist_path in tardist_paths:
         tar_image_path = _rel_posix(tardist_path, staged_root, prefix)
-        extract_tmp = Path(tempfile.mkdtemp(prefix="media_walker_tardist_"))
+        extract_tmp = Path(tmp_dir(prefix="media_walker_tardist_"))
         _tmp_holder.append(extract_tmp)
         n_members = 0
         try:
@@ -745,7 +746,7 @@ def walk_media(source: Path, output_dir: Path, hash_algo: str = DEFAULT_HASH,
 
     owns_staging = staging_dir is None
     staging_dir = Path(staging_dir) if staging_dir else Path(
-        tempfile.mkdtemp(prefix="media_walker_stage_"))
+        tmp_dir(prefix="media_walker_stage_"))
 
     tmp_holder: list = []
     try:
@@ -960,7 +961,7 @@ def discover_ground_truth(staged_root: Path, hash_algo: str = DEFAULT_HASH, pref
 
     for tardist_path in tardist_paths:
         tar_image_path = _rel_posix(tardist_path, staged_root, prefix)
-        extract_tmp = Path(tempfile.mkdtemp(prefix="media_walker_validate_tardist_"))
+        extract_tmp = Path(tmp_dir(prefix="media_walker_validate_tardist_"))
         _tmp_holder.append(extract_tmp)
         try:
             with tarfile.open(tardist_path, "r:*") as tf:
@@ -1042,7 +1043,7 @@ def validate_output(source: Path, output_dir: Path, staging_dir: Optional[Path] 
 
     owns_staging = staging_dir is None
     staging_dir = Path(staging_dir) if staging_dir else Path(
-        tempfile.mkdtemp(prefix="media_walker_validate_stage_"))
+        tmp_dir(prefix="media_walker_validate_stage_"))
     tmp_holder: list = []
     try:
         stage_report = stage_source(source, staging_dir, iso_backend=iso_backend)
