@@ -61,13 +61,27 @@ def audit_against_golden(candidate, golden):
     ``verdict`` is ``'CLEAN'`` when no structure was lost. ``lost_detail`` is a
     list of ``(block_index, byte_offset, structure_name, golden_nonzero_bytes)``.
     """
-    def _blocks(path):
-        """Yield 512KB blocks from the XFS partition of ``path``."""
+    def _partition_base(path, fallback=None):
+        """Byte offset of the XFS partition, or ``fallback`` if none is locatable.
+
+        ``find_xfs_partition`` validates the on-disk superblock magic, so a
+        candidate whose *superblock block itself* was the wiped structure has no
+        locatable partition.  That is exactly the loss this audit must REPORT —
+        not raise on.  The golden is strict (its geometry is the reference); a
+        candidate without a locatable partition is compared from the golden's
+        offset.
+        """
         with open_disk_image(path) as f:
             part = find_xfs_partition(f)
-            if part is None:
+        if part is None:
+            if fallback is None:
                 raise ValueError(f"no XFS partition in {path}")
-            base = part[0]
+            return fallback
+        return part[0]
+
+    def _blocks(path, base):
+        """Yield 512KB blocks from ``base`` to EOF of ``path``."""
+        with open_disk_image(path) as f:
             f.seek(base)
             while True:
                 b = f.read(COMPARE_BLOCK)
@@ -75,13 +89,15 @@ def audit_against_golden(candidate, golden):
                     break
                 yield b
 
-    c_iter = _blocks(candidate)
+    golden_base = _partition_base(golden)             # reference geometry
+    candidate_base = _partition_base(candidate, fallback=golden_base)
+    c_iter = _blocks(candidate, candidate_base)
 
     structures = lost = 0
     run = longest = 0
     detail = []
     idx = 0
-    for gb in _blocks(golden):
+    for gb in _blocks(golden, golden_base):
         cb = next(c_iter, None)
         if cb is None:
             break
