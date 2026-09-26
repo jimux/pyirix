@@ -16,8 +16,9 @@ from .config import (
     detect_platform, PLATFORMS, prom_offset_to_addr
 )
 from .prom_format import (
-    NON_MIPS_FORMATS, FORMAT_SN_CONTAINER, FORMAT_MIPS_VECTOR,
+    NON_MIPS_FORMATS, FORMAT_SN_CONTAINER, FORMAT_SHDR, FORMAT_MIPS_VECTOR,
     detect_prom_format, describe_prom_format,
+    shdr_flash_offset, shdr_segment_count,
 )
 
 
@@ -416,13 +417,27 @@ def extract_prom_code(data: bytes, endian: str = "big") -> PromCodeImage:
         return PromCodeImage(code, base, info.code_offset, info.code_size,
                              True, info, note, FORMAT_SN_CONTAINER)
 
-    # Not an SN container. Before treating the file as a flat MIPS image (the
-    # old behaviour), positively identify the format: an image that is a
-    # different container (O2 SHDR, IO4 JKSW/JFK4) or not MIPS at all (x86
-    # BIOS, 68K, ARM, graphics microcode, MIPS ELF) must NOT be disassembled
-    # from offset 0 as if it were a CPU PROM -- that fabricates output. Refuse
-    # with a specific message; every caller already handles ValueError.
+    # Not an SN container. Identify the format positively before treating the
+    # file as a flat MIPS image:
+    #  * O2/IP32 SHDR flash is flat-executable at 0xBFC00000 -- its SHDR segment
+    #    headers are crafted branch instructions and the CPU reset vector runs
+    #    through them (hw/mips/sgi_o2.c). Only an outer 'PROM' container needs
+    #    stripping; the flash image is then the whole file at the PROM base.
+    #  * A different container (IO4 JKSW/JFK4) or a file that is not MIPS at all
+    #    (x86 BIOS, 68K, ARM, graphics microcode, MIPS ELF) must NOT be
+    #    disassembled from offset 0 as if it were a CPU PROM -- that fabricates
+    #    output. Refuse with a specific message; callers handle ValueError.
     fmt = detect_prom_format(data)
+    if fmt == FORMAT_SHDR:
+        off = shdr_flash_offset(data)
+        flash = data[off:]
+        note = ("O2/IP32 SHDR flash: {} segment(s), flash offset 0x{:x}, "
+                "base 0x{:08x}").format(
+                    shdr_segment_count(flash), off, PROM_BASE)
+        if endian != "big":
+            flash = normalize_data(flash, endian)
+        return PromCodeImage(flash, PROM_BASE, off, len(flash), False, None,
+                             note, FORMAT_SHDR)
     if fmt in NON_MIPS_FORMATS:
         raise ValueError(
             "{} [{}]: not a raw MIPS CPU PROM. Refusing to disassemble it "
