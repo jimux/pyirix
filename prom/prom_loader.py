@@ -3,6 +3,7 @@
 PROM loading with caching, platform detection, and metadata extraction.
 """
 
+import gzip
 import hashlib
 import struct
 from dataclasses import dataclass, field
@@ -28,6 +29,102 @@ class PromMetadata:
     entry_point: int  # Entry point address from header
     part_number: Optional[str]  # SGI part number if detectable
     vectors: Dict[str, int] = field(default_factory=dict)
+    # SN0/SN1 container mapping (None/False for a plain PROM).
+    is_container: bool = False
+    code_offset: int = 0          # file offset of the MIPS code slice
+    code_size: int = 0            # length of the MIPS code slice
+    load_address: int = 0         # 64-bit SN load address (raw)
+    code_base: int = 0            # 32-bit PROM-segment address of code[0]
+    mapping_note: str = ""        # human-readable "which mapping" line
+
+
+# ---------------------------------------------------------------------------
+# SN0/SN1 container support (Origin 2000/IP27, Origin 3000/IP35, IO6).
+#
+# SN-family PROMs use the `promhdr_t` format defined in
+# `sys/SN/promhdr.h` (IRIX SDK): a fixed header (magic PROM_MAGIC
+# "JFKSWCSM" at 0x40, length at 0x50, numsegs at 0x78) followed by up to
+# PROM_MAXSEGS=16 `promseg_t` descriptors starting at 0x80. Each descriptor is
+# 128 bytes: name[16], flags, offset, entry, loadaddr, length, length_c, sum,
+# sum_c, memlength, resv1[5]. The first (and here only) segment's MIPS image is
+# at `offset` (PROM_DATA_OFFSET = 0x1000) and is loaded at `loadaddr`.
+#
+# There is NO fixup/relocation table in this container: `sum`/`sum_c` are byte
+# checksums, and `sgi_ip27_load_prom` copies the (uncompressed) segment raw.
+# Disassembling the file from offset 0 decodes the header as NOPs; the code
+# below slices the segment out and reports the address it must be at.
+#
+# The QEMU loader's shorthand "load_addr at 0xA0" is the descriptor's `entry`;
+# the true `loadaddr` is at 0xA8. They are equal for IP27/IP35 but differ for
+# IO6 (entry = loadaddr + 0x140), so the base is taken from 0xA8.
+# ---------------------------------------------------------------------------
+SN0_MAGIC = b'JFKSWCSM'
+SN0_MAGIC_OFFSET = 0x40
+SN0_REVISION_ADDR = 0x38
+SN0_VERSION_ADDR = 0x48
+SN0_TOTAL_SIZE_ADDR = 0x50
+SN0_NUMSEGS_ADDR = 0x78
+SN0_SEGS_OFFSET = 0x80
+# First promseg_t descriptor (offsets absolute in the file).
+SN0_MODULE_NAME_ADDR = SN0_SEGS_OFFSET        # name[16]
+SN0_SEG_FLAGS_ADDR = 0x90
+SN0_CODE_OFFSET_ADDR = 0x98                   # segment offset
+SN0_ENTRY_ADDR = 0xA0                         # segment entry point
+SN0_LOAD_ADDR_ADDR = 0xA8                     # segment loadaddr
+SN0_CODE_SIZE_ADDR = 0xB0                     # segment true length
+SN0_CODE_SIZE_C_ADDR = 0xB8                   # segment compressed length
+SN0_SUM_ADDR = 0xC0                           # segment true byte sum (checksum)
+SN0_SUM_C_ADDR = 0xC8                         # compressed byte sum
+SN0_MEMLENGTH_ADDR = 0xD0                     # true length + BSS length
+PROM_DATA_OFFSET = 0x1000
+
+# promseg_t.flags compression field (SFLAG_* in sys/SN/promhdr.h).
+SN0_SFLAG_COMPMASK = 0x7
+SN0_SFLAG_NONE = 0
+SN0_SFLAG_RLE = 1
+SN0_SFLAG_LZW = 2
+SN0_SFLAG_GZIP = 3
+SN0_SFLAG_LOADABLE = 0x10
+
+# Low physical region where SGI PROM segments are mapped; KSEG1 is +0xa0000000.
+PROM_PHYS_BASE = 0x1fc00000   # classic CPU PROM physical base
+PROM_PHYS_END = 0x20000000
+
+
+@dataclass
+class SN0ContainerInfo:
+    """Parsed SN0/SN1 (`promhdr_t`) container header (first segment)."""
+    module_name: str
+    revision: int
+    version: int
+    total_size: int
+    numsegs: int
+    flags: int
+    code_offset: int
+    entry: int
+    load_address: int
+    code_size: int
+    code_size_c: int
+    sum: int
+    sum_c: int
+    memlength: int
+
+
+@dataclass
+class PromCodeImage:
+    """A PROM's MIPS code slice plus the address it is mapped at.
+
+    Plain PROMs: ``data`` is the whole image and ``load_address`` is PROM_BASE.
+    SN containers: ``data`` is the code slice and ``load_address`` is its
+    translated (KSEG1) base, ready to hand to a disassembler.
+    """
+    data: bytes
+    load_address: int
+    file_offset: int
+    code_size: int
+    is_container: bool = False
+    container: Optional[SN0ContainerInfo] = None
+    mapping_note: str = ""
 
 
 # Cache for loaded PROM data
@@ -149,6 +246,196 @@ def read_u32_le(data: bytes, offset: int) -> int:
     return struct.unpack("<I", data[offset:offset + 4])[0]
 
 
+def read_u64_be(data: bytes, offset: int) -> int:
+    """Read big-endian 64-bit unsigned integer (0 if out of range)."""
+    if offset + 8 > len(data):
+        return 0
+    return struct.unpack(">Q", data[offset:offset + 8])[0]
+
+
+def is_sn0_container(data: bytes) -> bool:
+    """Return True if *data* carries the SN0/SN1 "JFKSWCSM" container magic."""
+    end = SN0_MAGIC_OFFSET + len(SN0_MAGIC)
+    if len(data) < end:
+        return False
+    return data[SN0_MAGIC_OFFSET:end] == SN0_MAGIC
+
+
+def parse_sn0_container(data: bytes) -> Optional[SN0ContainerInfo]:
+    """Parse an SN0/SN1 container header exactly as the IP27 QEMU loader reads it.
+
+    Returns None when the magic is absent. The returned fields may be invalid
+    (e.g. a zero code_size on a truncated dump); validation happens in
+    :func:`extract_prom_code`.
+    """
+    if not is_sn0_container(data):
+        return None
+
+    name_raw = data[SN0_MODULE_NAME_ADDR:SN0_MODULE_NAME_ADDR + 16]
+    module_name = name_raw.split(b'\x00', 1)[0].decode('ascii', errors='replace')
+
+    return SN0ContainerInfo(
+        module_name=module_name,
+        revision=read_u64_be(data, SN0_REVISION_ADDR),
+        version=read_u64_be(data, SN0_VERSION_ADDR),
+        total_size=read_u64_be(data, SN0_TOTAL_SIZE_ADDR),
+        numsegs=read_u64_be(data, SN0_NUMSEGS_ADDR),
+        flags=read_u64_be(data, SN0_SEG_FLAGS_ADDR),
+        code_offset=read_u64_be(data, SN0_CODE_OFFSET_ADDR),
+        entry=read_u64_be(data, SN0_ENTRY_ADDR),
+        load_address=read_u64_be(data, SN0_LOAD_ADDR_ADDR),
+        code_size=read_u64_be(data, SN0_CODE_SIZE_ADDR),
+        code_size_c=read_u64_be(data, SN0_CODE_SIZE_C_ADDR),
+        sum=read_u64_be(data, SN0_SUM_ADDR),
+        sum_c=read_u64_be(data, SN0_SUM_C_ADDR),
+        memlength=read_u64_be(data, SN0_MEMLENGTH_ADDR),
+    )
+
+
+def _prom_phys_of(load_address: int) -> Optional[int]:
+    """Reduce a load address (XKPHYS / KSEG0 / KSEG1 / physical) to PROM phys.
+
+    Returns None when the address does not land in the low physical region where
+    SGI PROM segments are mapped (classic CPU PROM 0x1fc00000, SN IO6 PROM
+    0x11c00000, ...).
+    """
+    if load_address >= (1 << 32):
+        # XKPHYS: physical address is the low 59-bit field (e.g.
+        # 0xc0000000_1fc00000 -> 0x1fc00000).
+        phys = load_address & 0x07ffffffffffffff
+    elif 0xa0000000 <= load_address < 0xc0000000:
+        phys = load_address - 0xa0000000  # KSEG1
+    elif 0x80000000 <= load_address < 0xa0000000:
+        phys = load_address - 0x80000000  # KSEG0
+    else:
+        phys = load_address
+    if 0 < phys < PROM_PHYS_END:
+        return phys
+    return None
+
+
+def prom_code_base(load_address: int) -> int:
+    """Map a container load address to the 32-bit KSEG1 PROM segment.
+
+    The disassembler speaks KSEG1 (0xbfc00000), while SN containers declare a
+    64-bit XKPHYS load address (e.g. 0xc0000000_1fc00000). Falls back to
+    ``PROM_BASE`` for an address that is not in the PROM window.
+    """
+    phys = _prom_phys_of(load_address)
+    if phys is None:
+        return PROM_BASE
+    return phys + 0xa0000000
+
+
+def extract_prom_code(data: bytes, endian: str = "big") -> PromCodeImage:
+    """Return the MIPS code slice and load address for a PROM image.
+
+    Plain PROMs are returned whole, based at ``PROM_BASE``. SN0/SN1 containers
+    are sliced at ``code_offset`` and based at the translated load address. A
+    `promseg_t` segment with the GZIP flag is decompressed first (IO6); the
+    decompressed size and the `sum` checksum are verified. Byte-swapped
+    (``endian != "big"``) images are normalized after extraction.
+
+    Raises:
+        ValueError: if the container magic is present but the header is
+            malformed (zero/out-of-range code size, segment past EOF, load
+            address outside the PROM region), the segment uses unsupported
+            compression (RLE/LZW), gzip fails, or the size/checksum does not
+            match the header. Never silently misparses.
+    """
+    if is_sn0_container(data):
+        info = parse_sn0_container(data)
+        if info is None:
+            raise ValueError("SN0 container magic present but header unreadable")
+
+        comp = info.flags & SN0_SFLAG_COMPMASK
+        if comp == SN0_SFLAG_NONE:
+            stored_len = info.code_size
+        elif comp == SN0_SFLAG_GZIP:
+            stored_len = info.code_size_c
+            if stored_len <= 0:
+                raise ValueError(
+                    "SN0 segment is gzip but has no compressed length")
+        else:
+            raise ValueError(
+                "SN0 segment compression {} (flags 0x{:x}) is not supported "
+                "(only NONE and GZIP are)".format(comp, info.flags))
+        if info.code_size <= 0:
+            raise ValueError(
+                "SN0 container has no code (code_size={}, truncated header?)".format(
+                    info.code_size))
+        if info.code_offset < SN0_MAGIC_OFFSET:
+            raise ValueError(
+                "SN0 code_offset 0x{:x} overlaps the container header".format(
+                    info.code_offset))
+        end = info.code_offset + stored_len
+        if end > len(data):
+            raise ValueError(
+                "SN0 segment 0x{:x}+0x{:x} runs past EOF (file is 0x{:x} bytes, "
+                "truncated?)".format(info.code_offset, stored_len, len(data)))
+        if _prom_phys_of(info.load_address) is None:
+            raise ValueError(
+                "SN0 load address 0x{:016x} is outside the PROM address range".format(
+                    info.load_address))
+
+        stored = data[info.code_offset:end]
+        if comp == SN0_SFLAG_GZIP:
+            try:
+                code = gzip.decompress(stored)
+            except (OSError, EOFError) as exc:
+                raise ValueError(
+                    "SN0 gzip segment failed to decompress: {}".format(exc))
+            if len(code) != info.code_size:
+                raise ValueError(
+                    "SN0 decompressed size {} != declared length {}".format(
+                        len(code), info.code_size))
+        else:
+            code = stored
+
+        # promseg_t.sum is a 32-bit additive byte sum of the true segment.
+        if info.sum:
+            actual_sum = sum(code) & 0xFFFFFFFF
+            if actual_sum != info.sum:
+                raise ValueError(
+                    "SN0 segment checksum mismatch (computed 0x{:x}, header "
+                    "0x{:x})".format(actual_sum, info.sum))
+
+        if endian != "big":
+            code = normalize_data(code, endian)
+        base = prom_code_base(info.load_address)
+        comp_name = "none" if comp == SN0_SFLAG_NONE else "gzip"
+        note = ("SN0 container: module {}, code_off 0x{:x}, size 0x{:x}, "
+                "loadaddr 0x{:016x}, base 0x{:08x}, compression {}").format(
+                    info.module_name, info.code_offset, info.code_size,
+                    info.load_address, base, comp_name)
+        return PromCodeImage(code, base, info.code_offset, info.code_size,
+                             True, info, note)
+
+    code = data
+    if endian != "big":
+        code = normalize_data(data, endian)
+    return PromCodeImage(code, PROM_BASE, 0, len(code), False, None, "")
+
+
+def load_prom_code(filename: str, use_cache: bool = True) -> Optional[PromCodeImage]:
+    """Load a PROM file as a code image (SN-container aware).
+
+    Args:
+        filename: PROM filename
+        use_cache: Whether to use cached raw data
+
+    Returns:
+        PromCodeImage, or None if the file is not found.
+
+    Raises:
+        ValueError: on a malformed SN0 container header (see extract_prom_code).
+    """
+    data = load_prom(filename, use_cache)
+    if data is None:
+        return None
+    return extract_prom_code(data, detect_endianness(data))
+
+
 def extract_entry_point(data: bytes, endian: str) -> int:
     """
     Extract entry point from PROM header.
@@ -253,14 +540,36 @@ def get_prom_metadata(filename: str, use_cache: bool = True) -> Optional[PromMet
     platform = detect_platform(filename)
     endian = detect_endianness(data)
 
-    # Extract entry point
-    entry_point = extract_entry_point(data, endian)
+    # SN0/SN1 containers wrap the MIPS image at code_offset. Record the mapping
+    # for callers that disassemble (the code slice is not stored here to keep
+    # metadata light). The classic 8-word vector header / entry-point offsets do
+    # NOT apply to a container, so those fields stay read from the raw file
+    # (where they are the container header, i.e. normally zero/empty).
+    is_container = is_sn0_container(data)
+    code_offset = code_size = load_address = code_base = 0
+    mapping_note = ""
+    if is_container:
+        try:
+            code = extract_prom_code(data, endian)
+            code_offset = code.file_offset
+            code_size = code.code_size
+            code_base = code.load_address
+            load_address = code.container.load_address if code.container else 0
+            mapping_note = code.mapping_note
+        except ValueError:
+            # Leave fields at 0; extract_prom_code is the strict entry point.
+            pass
+
+    # Extract entry point. The classic entry-point offset does not exist in a
+    # container header, so a container reports the PROM base rather than a
+    # header word misread as an address.
+    entry_point = PROM_BASE if is_container else extract_entry_point(data, endian)
 
     # Extract part number
     part_number = extract_part_number(filename)
 
-    # Extract vectors
-    vectors = extract_vectors(data, endian)
+    # Extract vectors (classic PROM header only; containers have none).
+    vectors = {} if is_container else extract_vectors(data, endian)
 
     metadata = PromMetadata(
         filename=filename,
@@ -271,7 +580,13 @@ def get_prom_metadata(filename: str, use_cache: bool = True) -> Optional[PromMet
         endian=endian,
         entry_point=entry_point,
         part_number=part_number,
-        vectors=vectors
+        vectors=vectors,
+        is_container=is_container,
+        code_offset=code_offset,
+        code_size=code_size,
+        load_address=load_address,
+        code_base=code_base,
+        mapping_note=mapping_note,
     )
 
     if use_cache:

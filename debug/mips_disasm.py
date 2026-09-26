@@ -6,6 +6,7 @@ MIPS disassembly with hardware annotations using Capstone.
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 import struct
+import sys
 
 try:
     from capstone import Cs, CS_ARCH_MIPS, CS_MODE_MIPS32, CS_MODE_MIPS64, CS_MODE_BIG_ENDIAN
@@ -15,7 +16,9 @@ except ImportError:
 
 from pyirix.prom.config import PROM_BASE, prom_offset_to_addr, addr_to_prom_offset
 from pyirix.prom.hardware_defs import annotate_address, format_annotation, get_lui_annotation
-from pyirix.prom.prom_loader import load_prom, get_prom_metadata, normalize_data
+from pyirix.prom.prom_loader import (
+    load_prom, get_prom_metadata, normalize_data, load_prom_code,
+)
 
 
 @dataclass
@@ -250,17 +253,24 @@ def disassemble_prom(
     Returns:
         List of DisasmLine objects
     """
-    data = load_prom(filename)
-    if not data:
-        return []
-
     meta = get_prom_metadata(filename)
     if not meta:
         return []
 
-    # Normalize to big-endian if needed
-    if meta.endian != "big":
-        data = normalize_data(data, meta.endian)
+    # SN containers hide the MIPS image behind a header; load_prom_code slices
+    # it out and reports the (KSEG1) base it must be disassembled at.
+    try:
+        code = load_prom_code(filename)
+    except ValueError as exc:
+        print(f"disassemble_prom: {filename}: {exc}", file=sys.stderr)
+        return []
+    if code is None:
+        return []
+
+    if code.mapping_note:
+        print(code.mapping_note, file=sys.stderr)
+
+    data = code.data
 
     # Calculate range
     start = offset
@@ -271,7 +281,7 @@ def disassemble_prom(
 
     # Slice data
     data_slice = data[start:end]
-    base_addr = prom_offset_to_addr(start)
+    base_addr = code.load_address + start
 
     # Get platform-appropriate mode
     mode = "mips3"  # Default

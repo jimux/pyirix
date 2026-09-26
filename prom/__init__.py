@@ -22,4 +22,6 @@ from pyirix.prom.hardware_defs import (
 )
 from pyirix.prom.prom_loader import (
     load_prom, get_prom_metadata, normalize_data, PromMetadata,
+    load_prom_code, extract_prom_code, is_sn0_container, parse_sn0_container,
+    prom_code_base, SN0ContainerInfo, PromCodeImage,
 )
