@@ -15,7 +15,8 @@ disassembly; the loader refuses instead (see
 ``prom_loader.extract_prom_code``).
 """
 
-from typing import Optional
+from dataclasses import dataclass
+from typing import List, Optional
 
 # --- recognised formats -----------------------------------------------------
 FORMAT_SN_CONTAINER = "sn-container"   # JFKSWCSM @0x40 (IP27/IP35/IO6)
@@ -27,19 +28,19 @@ FORMAT_KONA_ARM = "kona-arm"           # 0xbadc0ffe @0 (InfiniteReality)
 FORMAT_MMSC_X86 = "mmsc-x86"           # 0x5aa5a55a @0x18 (MMSC)
 FORMAT_GE_MICROCODE = "ge-microcode"   # "EA\x00\x01" @0 (GE5/GE7)
 FORMAT_IO4_JFK4 = "io4-jfk4"           # "JFK4"@0: flat MIPS w/ 0x18 header
-FORMAT_IO4_JKSW = "io4-jksw"           # "JKSW"@0: Everest segment-loader blob
+FORMAT_IO4_JKSW = "io4-jksw"           # "JKSW"@0: Everest segment table
 FORMAT_MIPS_VECTOR = "mips-vector"     # classic SGI CPU PROM (IP4..IP30)
 FORMAT_TEXT = "text-data"              # plain text / data (not firmware)
 FORMAT_UNKNOWN = "unknown"
 
 #: Formats that are positively NOT a raw MIPS PROM image, and so must be
 #: REFUSED (annotated) rather than disassembled -- presenting flat MIPS for any
-#: of these fabricates output. ``sn-container``, ``shdr``, ``io4-jfk4`` and
-#: ``mips-vector`` are the images that ARE MIPS. ``unknown`` is included: an
-#: image that fails every positive check cannot be vouched for, so it is refused
-#: with a named reason rather than guessed at (the 49 library files that land
-#: here are I2C/EEPROM chip dumps, graphics microcode, controller/EPROM/flash
-#: images and two plain-text files -- none is a CPU PROM).
+#: of these fabricates output. ``sn-container``, ``shdr``, ``io4-jfk4``,
+#: ``io4-jksw`` and ``mips-vector`` are images we CAN slice. ``unknown`` is
+#: included: an image that fails every positive check cannot be vouched for, so
+#: it is refused with a named reason rather than guessed at (the 49 library
+#: files that land here are I2C/EEPROM chip dumps, graphics microcode,
+#: controller/EPROM/flash images and two plain-text files -- none a CPU PROM).
 NON_MIPS_FORMATS = frozenset({
     FORMAT_MIPS_ELF,
     FORMAT_SYSCO_68K,
@@ -47,7 +48,6 @@ NON_MIPS_FORMATS = frozenset({
     FORMAT_KONA_ARM,
     FORMAT_MMSC_X86,
     FORMAT_GE_MICROCODE,
-    FORMAT_IO4_JKSW,
     FORMAT_TEXT,
     FORMAT_UNKNOWN,
 })
@@ -67,9 +67,23 @@ SHDR_SEG_HDR = 0x40
 # and size == file_size - 0x18 exactly for each; the code is coherent MIPS).
 JFK4_CODE_OFFSET = 0x18
 JFK4_LOAD_ADDR = 0x81800000
-JKSW_DESCRIPTION = ("IO4 'JKSW' Everest PROM Segment Loader: a segmented blob "
-                    "with a segment table; the segment-table layout is not yet "
-                    "established")
+
+# IO4 'JKSW' segment-table image (sys/EVEREST/promhdr.h, source-validated):
+#   evpromhdr_t @0x00 {magic, cksum, startaddr, length, entry, version}  (24 B)
+#   seginfo_t   @0x18 {si_magic='SEG2', si_numsegs, si_segs[NUMSEGS]}
+#   promseg_t  (0x30): type, offset, entry, startaddr, length, cksum, data, resv
+#   segment data begins at PROMDATA_OFFSET (0x1000).
+# NOTE: promhdr.h also defines SEGINFO_OFFSET=0x100, but every library JKSW
+# image has si_magic at 0x18 and NOT at 0x100, so the MEASURED offset is used
+# (source for the struct, measurement for its location).
+JKSW_SI_MAGIC = 0x53454732             # 'SEG2'
+JKSW_SEGINFO_OFFSET = 0x18
+JKSW_SEG_SIZE = 0x30
+JKSW_MAXSEGS = 16
+JKSW_STYPE_MASK = 0xFF << 8
+JKSW_STYPE_MASTER = 0xFF << 8
+JKSW_PROMDATA_OFFSET = 0x1000
+JKSW_DESCRIPTION = "IO4 'JKSW' image (Everest promhdr segment table)"
 
 _MAGIC_AT_ZERO = (
     (b'\x7fELF', FORMAT_MIPS_ELF),
@@ -190,6 +204,64 @@ def jfk4_load_address(data: bytes) -> int:
 def jfk4_code_size(data: bytes) -> int:
     """Code size of an IO4 'JFK4' image (field at 0x0c); 0 if unreadable."""
     return int.from_bytes(data[0x0C:0x10], 'big') if len(data) >= 0x10 else 0
+
+
+@dataclass
+class JKSWSegment:
+    """One `promseg_t` from an IO4 'JKSW' image (sys/EVEREST/promhdr.h)."""
+    type: int
+    offset: int
+    entry: int
+    start_address: int
+    length: int
+    checksum: int
+
+    @property
+    def is_master(self) -> bool:
+        return (self.type & JKSW_STYPE_MASK) == JKSW_STYPE_MASTER
+
+
+def parse_jksw(data: bytes) -> Optional[List[JKSWSegment]]:
+    """Parse the IO4 'JKSW' segment table, or None if the table is absent.
+
+    Layout from ``sys/EVEREST/promhdr.h``: the `evpromhdr_t` at 0x00 is
+    followed by the `seginfo_t` at **0x18** (measured; the header's
+    ``SEGINFO_OFFSET`` of 0x100 is absent in every library image). Every field
+    is bounds-checked; a table whose ``si_magic`` is wrong or whose ``numsegs``
+    is out of 1..16 is rejected rather than guessed at.
+    """
+    if data[0:4] != b'JKSW':
+        return None
+    base = JKSW_SEGINFO_OFFSET
+    if base + 8 > len(data):
+        return None
+    si_magic = int.from_bytes(data[base:base + 4], 'big')
+    numsegs = int.from_bytes(data[base + 4:base + 8], 'big')
+    if si_magic != JKSW_SI_MAGIC or not (1 <= numsegs <= JKSW_MAXSEGS):
+        return None
+    segs: List[JKSWSegment] = []
+    p = base + 8
+    for _ in range(numsegs):
+        if p + JKSW_SEG_SIZE > len(data):
+            return None
+        segs.append(JKSWSegment(
+            type=int.from_bytes(data[p:p + 4], 'big'),
+            offset=int.from_bytes(data[p + 4:p + 8], 'big'),
+            entry=int.from_bytes(data[p + 8:p + 16], 'big'),
+            start_address=int.from_bytes(data[p + 16:p + 24], 'big'),
+            length=int.from_bytes(data[p + 24:p + 28], 'big'),
+            checksum=int.from_bytes(data[p + 28:p + 32], 'big'),
+        ))
+        p += JKSW_SEG_SIZE
+    return segs
+
+
+def jksw_entry_segment(segs: List[JKSWSegment]) -> Optional[JKSWSegment]:
+    """The segment carrying the entry code: the MASTER segment, else the first."""
+    for s in segs:
+        if s.is_master:
+            return s
+    return segs[0] if segs else None
 
 
 def shdr_flash_offset(data: bytes) -> int:

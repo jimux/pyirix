@@ -17,9 +17,10 @@ from .config import (
 )
 from .prom_format import (
     NON_MIPS_FORMATS, FORMAT_SN_CONTAINER, FORMAT_SHDR, FORMAT_IO4_JFK4,
-    FORMAT_MIPS_VECTOR, JFK4_CODE_OFFSET,
+    FORMAT_IO4_JKSW, FORMAT_MIPS_VECTOR, JFK4_CODE_OFFSET,
     detect_prom_format, describe_prom_format,
     shdr_flash_offset, shdr_segment_count, jfk4_load_address, jfk4_code_size,
+    parse_jksw, jksw_entry_segment,
 )
 
 
@@ -507,6 +508,30 @@ def extract_prom_code(data: bytes, endian: str = "big") -> PromCodeImage:
             code = normalize_data(code, endian)
         return PromCodeImage(code, base, off, size, False, None, note,
                              FORMAT_IO4_JFK4)
+    if fmt == FORMAT_IO4_JKSW:
+        # IO4 'JKSW': evpromhdr_t + seginfo_t (sys/EVEREST/promhdr.h). The entry
+        # code is the MASTER segment; slice it. A table that is absent or whose
+        # entry segment runs past EOF is refused rather than misparsed.
+        segs = parse_jksw(data)
+        if not segs:
+            raise ValueError(
+                "IO4 'JKSW' image: segment table absent or invalid")
+        seg = jksw_entry_segment(segs)
+        if seg is None or seg.length <= 0 or seg.offset + seg.length > len(data):
+            raise ValueError(
+                "IO4 'JKSW' image: entry segment 0x{:x}+0x{:x} is invalid or "
+                "runs past EOF (truncated?)".format(
+                    seg.offset if seg else 0, seg.length if seg else 0))
+        code = data[seg.offset:seg.offset + seg.length]
+        base = prom_code_base(seg.start_address)
+        note = ("IO4 'JKSW' image: {} segment(s); entry type 0x{:x}, off "
+                "0x{:x}, size 0x{:x}, start 0x{:016x}, base 0x{:08x}").format(
+                    len(segs), seg.type, seg.offset, seg.length,
+                    seg.start_address, base)
+        if endian != "big":
+            code = normalize_data(code, endian)
+        return PromCodeImage(code, base, seg.offset, seg.length, False, None,
+                             note, FORMAT_IO4_JKSW)
     if fmt in NON_MIPS_FORMATS:
         raise ValueError(
             "{} [{}]: not a raw MIPS CPU PROM. Refusing to disassemble it "
