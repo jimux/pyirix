@@ -539,27 +539,37 @@ def load_prom_code(filename: str, use_cache: bool = True) -> Optional[PromCodeIm
     return extract_prom_code(data, detect_endianness(data))
 
 
+def _decode_jump_target(word: int) -> Optional[int]:
+    """Decode a MIPS ``j``/``jal`` instruction to its target address.
+
+    The classic SGI PROM header is a table of JUMP instructions, so a header
+    word is an address only via its decode -- reading it raw (as the old code
+    did) yields an instruction encoding, not an address.
+    """
+    if (word >> 26) in (0x02, 0x03):        # J, JAL
+        return 0xB0000000 | ((word & 0x03FFFFFF) << 2)
+    return None
+
+
+def _in_prom_space(addr: int) -> bool:
+    return (0x9FC00000 <= addr < 0xA0000000) or (0xBFC00000 <= addr < 0xC0000000)
+
+
 def extract_entry_point(data: bytes, endian: str) -> int:
     """
-    Extract entry point from PROM header.
+    Extract the entry point of a classic SGI PROM.
 
-    The entry point is typically at offset 0x18 in the PROM header.
+    The reset entry is the target of the header's first jump instruction (at
+    file offset 0; on IP28 the first word is a zero pad and the jump is at +4).
+    Measured: every classic PROM jumps to ``0xbfc003c0``. Falls back to
+    ``PROM_BASE`` when no jump decodes there (IP26 has no such header).
     """
-    if len(data) < ENTRY_POINT_OFFSET + 4:
-        return PROM_BASE  # Default to PROM base
-
-    if endian == "big":
-        entry = read_u32_be(data, ENTRY_POINT_OFFSET)
-    else:
-        entry = read_u32_le(data, ENTRY_POINT_OFFSET)
-
-    # Validate entry point is in PROM range
-    if 0xbfc00000 <= entry < 0xc0000000:
-        return entry
-    elif 0x9fc00000 <= entry < 0xa0000000:
-        return entry
-
-    # If not valid, return PROM base
+    read_fn = read_u32_be if endian == "big" else read_u32_le
+    for off in (0x00, 0x04):
+        if off + 4 <= len(data):
+            target = _decode_jump_target(read_fn(data, off))
+            if target is not None and _in_prom_space(target):
+                return target
     return PROM_BASE
 
 
@@ -576,52 +586,27 @@ def detect_shdr_header(data: bytes) -> bool:
 
 def extract_vectors(data: bytes, endian: str) -> Dict[str, int]:
     """
-    Extract known vectors from PROM.
+    Extract the classic SGI PROM header's jump table as real addresses.
 
-    Returns dict mapping vector name to address.
-
-    Only the fields that name an *address* are range-checked: a "vector" must
-    fall in MIPS kernel/PROM space (KSEG0/KSEG1, ``0x80000000..0xc0000000``).
-    That range is the whole point -- for PROMs whose header is not the classic
-    8-word layout (IP26 begins ``0x40a06800``, IP28 begins with a zero word) the
-    same offsets hold instructions or data, and emitting e.g.
-    ``reinit_vector=0x40ac3000`` would present an instruction as an address.
-    Implausible ones are omitted rather than fabricated.
+    The first 0x100 bytes are 32-bit ``j`` instructions (on an 8-byte stride,
+    the intervening words being delay-pad zeroes): entry 0 jumps to the reset
+    entry (``0xbfc003c0`` on every classic PROM measured), the rest to
+    per-machine service handlers. A vector is emitted only when its word
+    decodes as a jump into PROM space -- so the value is a real address, never
+    an instruction presented as one. Returns ``{}`` when the header is not this
+    table (IP26 begins ``0x40a06800``; its layout is unestablished).
     """
-    vectors = {}
+    vectors: Dict[str, int] = {}
     read_fn = read_u32_be if endian == "big" else read_u32_le
 
-    # Vector table locations (offsets and names). The address-named fields are
-    # validated; the scalar fields (version/length/checksum/platform_id/flags)
-    # are not addresses and are kept as-is.
-    address_fields = {
-        "reset_vector", "entry_point", "printf_vector", "restart_vector",
-        "reinit_vector", "reboot_vector", "bss_start", "bss_end",
-    }
-    vector_offsets = [
-        (0x00, "reset_vector"),
-        (0x04, "version"),
-        (0x08, "length"),
-        (0x0c, "checksum"),
-        (0x10, "platform_id"),
-        (0x14, "flags"),
-        (0x18, "entry_point"),
-        (0x1c, "bss_start"),
-        (0x20, "bss_end"),
-        (0x80, "printf_vector"),
-        (0x84, "restart_vector"),
-        (0x88, "reinit_vector"),
-        (0x8c, "reboot_vector"),
-    ]
-
-    for offset, name in vector_offsets:
-        if offset + 4 <= len(data):
-            val = read_fn(data, offset)
-            if val == 0:
-                continue
-            if name in address_fields and not (0x80000000 <= val < 0xc0000000):
-                continue
-            vectors[name] = val
+    for off in range(0, 0x100, 4):
+        if off + 4 > len(data):
+            break
+        target = _decode_jump_target(read_fn(data, off))
+        if target is None or not _in_prom_space(target):
+            continue
+        name = "reset_vector" if off == 0 else "vector_0x{:02x}".format(off)
+        vectors[name] = target
 
     return vectors
 
