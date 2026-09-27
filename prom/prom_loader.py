@@ -22,6 +22,30 @@ from .prom_format import (
     shdr_flash_offset, shdr_segment_count, jfk4_load_address, jfk4_code_size,
     parse_jksw, jksw_entry_segment,
 )
+from .prom_compress import (
+    DecompressError, lzw_decompress, rle_decompress,
+)
+
+
+def jksw_lzw_segments(data: bytes) -> List[bytes]:
+    """Decode the LZW blocks stored in an IO4 ``JKSW`` flash image.
+
+    The blocks are self-describing (``prom_lzw_hdr_t`` + compress(1) stream) and
+    packed back-to-back; each runs to the next block's magic or EOF (measured on
+    the three ``io4prom*`` images, whose declared lengths and checksums all
+    verify). Returns the decoded segments in file order.
+    """
+    out: List[bytes] = []
+    magic = b"_LZW"
+    offs: List[int] = []
+    i = data.find(magic)
+    while i != -1:
+        offs.append(i)
+        i = data.find(magic, i + 1)
+    for k, off in enumerate(offs):
+        end = offs[k + 1] if k + 1 < len(offs) else len(data)
+        out.append(lzw_decompress(data[off:end]))
+    return out
 
 
 @dataclass
@@ -399,15 +423,15 @@ def extract_prom_code(data: bytes, endian: str = "big") -> PromCodeImage:
         comp = info.flags & SN0_SFLAG_COMPMASK
         if comp == SN0_SFLAG_NONE:
             stored_len = info.code_size
-        elif comp == SN0_SFLAG_GZIP:
+        elif comp in (SN0_SFLAG_GZIP, SN0_SFLAG_RLE, SN0_SFLAG_LZW):
             stored_len = info.code_size_c
             if stored_len <= 0:
                 raise ValueError(
-                    "SN0 segment is gzip but has no compressed length")
+                    "SN0 segment is compressed but has no compressed length")
         else:
             raise ValueError(
-                "SN0 segment compression {} (flags 0x{:x}) is not supported "
-                "(only NONE and GZIP are)".format(comp, info.flags))
+                "SN0 segment compression {} (flags 0x{:x}) is unknown "
+                "(NONE, RLE, LZW and GZIP are defined)".format(comp, info.flags))
         if info.code_size <= 0:
             raise ValueError(
                 "SN0 container has no code (code_size={}, truncated header?)".format(
@@ -437,6 +461,17 @@ def extract_prom_code(data: bytes, endian: str = "big") -> PromCodeImage:
                 raise ValueError(
                     "SN0 decompressed size {} != declared length {}".format(
                         len(code), info.code_size))
+        elif comp in (SN0_SFLAG_RLE, SN0_SFLAG_LZW):
+            try:
+                code = (rle_decompress(stored) if comp == SN0_SFLAG_RLE
+                        else lzw_decompress(stored))
+            except DecompressError as exc:
+                raise ValueError(
+                    "SN0 compressed segment failed to decompress: {}".format(exc))
+            if len(code) != info.code_size:
+                raise ValueError(
+                    "SN0 decompressed size {} != declared length {}".format(
+                        len(code), info.code_size))
         else:
             code = stored
 
@@ -451,7 +486,9 @@ def extract_prom_code(data: bytes, endian: str = "big") -> PromCodeImage:
         if endian != "big":
             code = normalize_data(code, endian)
         base = prom_code_base(info.load_address)
-        comp_name = "none" if comp == SN0_SFLAG_NONE else "gzip"
+        comp_name = {SN0_SFLAG_NONE: "none", SN0_SFLAG_RLE: "rle",
+                     SN0_SFLAG_LZW: "lzw", SN0_SFLAG_GZIP: "gzip"}.get(
+                         comp, "compression {}".format(comp))
         seg_names = ", ".join(s.name for s in info.segments) or info.module_name
         seg_desc = "{} segment(s) [{}]".format(
             len(info.segments) or 1, seg_names)
