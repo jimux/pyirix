@@ -565,6 +565,23 @@ def extract_prom_code(data: bytes, endian: str = "big") -> PromCodeImage:
                 "0x{:x}, size 0x{:x}, start 0x{:016x}, base 0x{:08x}").format(
                     len(segs), seg.type, seg.offset, seg.length,
                     seg.start_address, base)
+        # The MASTER segment is uncompressed; the per-CPU images (R4000/TFP/
+        # R10000) carry SFLAG_LZW. Decode them here so the compressed segments
+        # are consumed and validated (not merely available): a decode failure
+        # is a real corruption and refused, not ignored.
+        lzw_segs = [s for s in segs if (s.type & 0x6) == 0x4]
+        if lzw_segs:
+            try:
+                decoded = jksw_lzw_segments(data)
+            except DecompressError as exc:
+                raise ValueError(
+                    "IO4 'JKSW' LZW segment failed to decode: {}".format(exc))
+            if len(decoded) != len(lzw_segs):
+                raise ValueError(
+                    "IO4 'JKSW' image: {} LZW segment(s) declared but {} block(s) "
+                    "found".format(len(lzw_segs), len(decoded)))
+            note += "; {} LZW CPU segment(s) decoded ({} bytes total)".format(
+                len(decoded), sum(len(x) for x in decoded))
         if endian != "big":
             code = normalize_data(code, endian)
         return PromCodeImage(code, base, seg.offset, seg.length, False, None,
