@@ -250,13 +250,20 @@ def _candidate_partitions(f, read_vh) -> list[int]:
 # ── helpers ──────────────────────────────────────────────────────────────
 
 def _scratch_dir() -> str:
-    """Project-local scratch for temp extraction (falls back to system tmp)."""
+    """Project-local scratch for temp extraction (never the system /tmp).
+
+    Prefers the in-tree ``infra/indigo-import`` dir; otherwise the pyirix
+    workspace scratch root (``PYIRIX_TMPDIR`` / ``tmp/pyirix``). The system tmp
+    is a small RAM tmpfs on the project nodes, and these callers extract whole
+    tardists/ISOs, so it must never be the destination.
+    """
     for cand in ("infra/indigo-import", "../infra/indigo-import"):
         p = Path(cand)
         if p.parent.exists():
             p.mkdir(parents=True, exist_ok=True)
             return str(p)
-    return tempfile.gettempdir()
+    from pyirix.tmpdir import tmp_root
+    return str(tmp_root())
 
 
 def _safe_extractall(tf: tarfile.TarFile, dest: str):
