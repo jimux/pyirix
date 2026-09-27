@@ -17,10 +17,11 @@ from .config import (
 )
 from .prom_format import (
     NON_MIPS_FORMATS, FORMAT_SN_CONTAINER, FORMAT_SHDR, FORMAT_IO4_JFK4,
-    FORMAT_IO4_JKSW, FORMAT_MIPS_VECTOR, JFK4_CODE_OFFSET,
+    FORMAT_IO4_JKSW, FORMAT_MIPS_VECTOR, FORMAT_MIPS_VECTOR_SWAPPED,
+    JFK4_CODE_OFFSET,
     detect_prom_format, describe_prom_format,
     shdr_flash_offset, shdr_segment_count, jfk4_load_address, jfk4_code_size,
-    parse_jksw, jksw_entry_segment,
+    parse_jksw, jksw_entry_segment, swap_words16,
 )
 from .prom_compress import (
     DecompressError, lzw_decompress, rle_decompress,
@@ -586,6 +587,17 @@ def extract_prom_code(data: bytes, endian: str = "big") -> PromCodeImage:
             code = normalize_data(code, endian)
         return PromCodeImage(code, base, seg.offset, seg.length, False, None,
                              note, FORMAT_IO4_JKSW)
+    if fmt == FORMAT_MIPS_VECTOR_SWAPPED:
+        # A raw flash dump of a classic MIPS PROM, stored 16-bit word-swapped
+        # (e.g. the IP35/Fuel AM29LV160 mainboard PROM: entry 0xBFC00400). Swap
+        # the word order to recover the big-endian image; the detector only
+        # raises this format on strong evidence, never a heuristic hit.
+        code = swap_words16(data)
+        note = ("byte-swapped raw flash MIPS PROM (16-bit word swap; base "
+                "0x{:08x}); entry 0x{:x}").format(
+                    PROM_BASE, extract_entry_point(code, "big"))
+        return PromCodeImage(code, PROM_BASE, 0, len(code), False, None,
+                             note, FORMAT_MIPS_VECTOR_SWAPPED)
     if fmt in NON_MIPS_FORMATS:
         raise ValueError(
             "{} [{}]: not a raw MIPS CPU PROM. Refusing to disassemble it "

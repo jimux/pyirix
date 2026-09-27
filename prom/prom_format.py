@@ -30,6 +30,7 @@ FORMAT_GE_MICROCODE = "ge-microcode"   # "EA\x00\x01" @0 (GE5/GE7)
 FORMAT_IO4_JFK4 = "io4-jfk4"           # "JFK4"@0: flat MIPS w/ 0x18 header
 FORMAT_IO4_JKSW = "io4-jksw"           # "JKSW"@0: Everest segment table
 FORMAT_MIPS_VECTOR = "mips-vector"     # classic SGI CPU PROM (IP4..IP30)
+FORMAT_MIPS_VECTOR_SWAPPED = "mips-vector-swapped"  # same, raw flash word-swapped
 FORMAT_TEXT = "text-data"              # plain text / data (not firmware)
 FORMAT_UNKNOWN = "unknown"
 
@@ -107,6 +108,8 @@ _DESCRIPTIONS = {
     FORMAT_IO4_JFK4: "IO4 'JFK4' MIPS image (load 0x81800000, code@0x18)",
     FORMAT_IO4_JKSW: JKSW_DESCRIPTION,
     FORMAT_MIPS_VECTOR: "classic SGI MIPS CPU PROM",
+    FORMAT_MIPS_VECTOR_SWAPPED:
+        "raw-flash SGI MIPS CPU PROM (16-bit word-swapped)",
     FORMAT_TEXT: "plain text / data (not firmware)",
     FORMAT_UNKNOWN: "unrecognised firmware (not a MIPS CPU PROM)",
 }
@@ -134,6 +137,55 @@ def is_mips_vector(data: bytes) -> bool:
     if _word(data, 0) == 0 and ((_word(data, 4) >> 26) & 0x3F) in valid:
         return True
     return False
+
+
+def swap_words16(data: bytes) -> bytes:
+    """Return *data* with each 16-bit word byte-swapped (raw flash dumps)."""
+    n = len(data) & ~1
+    out = bytearray(n)
+    out[0::2] = data[1:n:2]
+    out[1::2] = data[0:n:2]
+    return bytes(out)
+
+
+def _jump_into_prom(word: int) -> bool:
+    if (word >> 26) in (0x02, 0x03):        # J, JAL
+        target = 0xB0000000 | ((word & 0x03FFFFFF) << 2)
+        return (0x9FC00000 <= target < 0xA0000000
+                or 0xBFC00000 <= target < 0xC0000000)
+    return False
+
+
+def is_swapped_mips_vector(data: bytes) -> bool:
+    """True if *data* is a MIPS PROM stored 16-bit word-swapped (raw flash).
+
+    STRONG evidence only, so an I2C/EEPROM chip dump cannot be mistaken for
+    firmware: the file must be at least 8 KiB, byte-swapping each 16-bit word
+    must put a jump into PROM space at offset 0 or +4, and that must start a run
+    of >= 2 such jumps on the classic 8-byte stride. The loose "does a swap make
+    the first word look like MIPS?" test fires on ~25 small chip dumps; this one
+    fires only on the genuine image (measured: exactly one file in the library).
+    """
+    if len(data) < 0x2000:
+        return False
+    x = swap_words16(data)
+
+    start = None
+    for off in (0x00, 0x04):
+        if off + 4 <= len(x) and _jump_into_prom(_word(x, off)):
+            start = off
+            break
+    if start is None:
+        return False
+
+    count = 0
+    off = start
+    while off + 4 <= len(x) and off < start + 0x100:
+        if not _jump_into_prom(_word(x, off)):
+            break
+        count += 1
+        off += 8
+    return count >= 2
 
 
 def is_text_image(data: bytes) -> bool:
@@ -187,6 +239,12 @@ def detect_prom_format(data: bytes) -> str:
 
     if is_mips_vector(data):
         return FORMAT_MIPS_VECTOR
+
+    # Last resort: a raw flash dump stored 16-bit word-swapped (e.g. the IP35/
+    # Fuel AM29LV160 motherboard PROM). Strong evidence only (>=8 KiB + a
+    # decoded jump-table run), so I2C/EEPROM chip dumps stay refused.
+    if is_swapped_mips_vector(data):
+        return FORMAT_MIPS_VECTOR_SWAPPED
 
     return FORMAT_UNKNOWN
 
