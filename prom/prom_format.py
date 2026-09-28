@@ -31,6 +31,11 @@ FORMAT_IO4_JFK4 = "io4-jfk4"           # "JFK4"@0: flat MIPS w/ 0x18 header
 FORMAT_IO4_JKSW = "io4-jksw"           # "JKSW"@0: Everest segment table
 FORMAT_MIPS_VECTOR = "mips-vector"     # classic SGI CPU PROM (IP4..IP30)
 FORMAT_MIPS_VECTOR_SWAPPED = "mips-vector-swapped"  # same, raw flash word-swapped
+
+# Minimum size for a classic (non-swapped) MIPS vector PROM. A real one is at
+# least tens of KiB; below this a first-word-only match is a chip dump, not a
+# PROM (see is_mips_vector). 4 KiB, vs 8 KiB for the byte-swapped path.
+MIN_MIPS_VECTOR_SIZE = 0x1000
 FORMAT_TEXT = "text-data"              # plain text / data (not firmware)
 FORMAT_UNKNOWN = "unknown"
 
@@ -129,7 +134,14 @@ def is_mips_vector(data: bytes) -> bool:
     check, so a container whose first word happens to look like MIPS (O2's
     ``0x10000011`` decodes as BEQ) is caught by its magic first.
     """
-    if len(data) < 8:
+    # Floor: a real classic SGI PROM is at least tens of KiB. A sub-4KiB file
+    # whose first word merely LOOKS like an opcode is far more likely an I2C
+    # EEPROM / chip dump. The byte-swapped path below already refuses those on
+    # size + jump evidence; without a floor here the loose test accepted a
+    # 256-byte 93CS56 EEPROM as a MIPS PROM (measured false positive, 2026-09-28;
+    # the smallest real mips-vector file in the library is 32,340 B, so this
+    # reclassifies exactly that one chip dump and no real PROM).
+    if len(data) < MIN_MIPS_VECTOR_SIZE:
         return False
     valid = {0x02, 0x04, 0x10, 0x01}   # J, BEQ, COP0, REGIMM
     if (_word(data, 0) >> 26) & 0x3F in valid:
