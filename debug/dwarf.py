@@ -239,11 +239,19 @@ class DwarfParser:
         if isinstance(v, int):
             return v
         if isinstance(v, bytes):
-            # DWARF expr: DW_OP_plus_uconst (0x23) <uleb>, or DW_OP_constN
-            if v and v[0] == 0x23:
+            # DWARF expr.  The common encodings: DW_OP_plus_uconst (0x23) <uleb>,
+            # DW_OP_constu (0x10) <uleb>, DW_OP_const1u (0x08) <byte>.  SGI
+            # MIPS_DWARF additionally emits DW_OP_consts (0x11) <sleb> for a
+            # member offset — the form that made every member read as "+?".  It
+            # is a signed constant, one byte for offsets < 64.
+            if v and v[0] == 0x23:   # DW_OP_plus_uconst
                 off, _ = uleb(v, 1); return off
-            if v and v[0] == 0x08:   # const1
+            if v and v[0] == 0x10:   # DW_OP_constu
+                off, _ = uleb(v, 1); return off
+            if v and v[0] == 0x08:   # DW_OP_const1u
                 return v[1]
+            if v and v[0] == 0x11:   # DW_OP_consts (SGI member-offset form)
+                off, _ = sleb(v, 1); return off
         return None
 
     def structs(self):
