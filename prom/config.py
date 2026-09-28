@@ -13,9 +13,26 @@ from typing import Optional, Tuple
 from pathlib import Path
 
 
-# PROM sample directory (project root, where the *.bin PROM images live).
-# pyirix/prom/config.py -> parents[2] == project root.
-PROM_DIR = Path(__file__).resolve().parents[2]
+# PROM library root. The PROM images live under <workspace>/PROM_library, where
+# the workspace root is the marker dir (.qemu-sgi-workspace) — NOT necessarily
+# parents[2]. The code lives in a focused sub-repo (sgi-irix-re), so parents[2]
+# is the REPO root and PROM_library is NOT under it (a real bug: relative PROM
+# names resolved to nothing). Resolve the workspace root the way the rest of the
+# tooling does; parents[2] is only a last resort.
+def _prom_workspace_root() -> Path:
+    try:
+        import sgi_workspace
+        return Path(sgi_workspace.workspace_root())
+    except Exception:
+        p = Path(__file__).resolve()
+        for anc in [p] + list(p.parents):
+            if (anc / ".qemu-sgi-workspace").exists():
+                return anc
+    return Path(__file__).resolve().parents[2]
+
+
+PROM_DIR = _prom_workspace_root()
+PROM_LIBRARY_DIR = PROM_DIR / "PROM_library"
 
 
 # Memory map constants (KSEG1 addresses - uncached)

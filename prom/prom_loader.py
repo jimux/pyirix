@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Tuple
 from functools import lru_cache
 
 from .config import (
-    PROM_DIR, PROM_BASE, ENTRY_POINT_OFFSET,
+    PROM_DIR, PROM_LIBRARY_DIR, PROM_BASE, ENTRY_POINT_OFFSET,
     detect_platform, PLATFORMS, prom_offset_to_addr
 )
 from .prom_format import (
@@ -180,24 +180,38 @@ _prom_cache: Dict[str, bytes] = {}
 _metadata_cache: Dict[str, PromMetadata] = {}
 
 
+_PROM_EXTS = (".bin", ".img", ".rom", ".image")
+
+
 def list_prom_files() -> List[Path]:
-    """List all PROM binary files in the samples directory."""
-    proms = list(PROM_DIR.glob("*.bin"))
-    return sorted(proms, key=lambda p: p.name.lower())
+    """List PROM images under PROM_library (all supported extensions)."""
+    if not PROM_LIBRARY_DIR.is_dir():
+        return []
+    proms = [p for p in PROM_LIBRARY_DIR.rglob("*")
+             if p.is_file() and p.suffix.lower() in _PROM_EXTS]
+    return sorted(proms, key=lambda p: str(p).lower())
 
 
 def get_prom_path(filename: str) -> Optional[Path]:
-    """Get full path for a PROM filename."""
-    # Try exact match
-    path = PROM_DIR / filename
-    if path.exists():
-        return path
+    """Resolve a PROM by absolute path, or by name/path under PROM_library.
 
-    # Try case-insensitive match
-    for p in PROM_DIR.glob("*.bin"):
-        if p.name.lower() == filename.lower():
-            return p
-
+    Accepts: an absolute path; a workspace-relative path INCLUDING the
+    'PROM_library/' prefix; a path relative to PROM_library ('bins/cpu/...');
+    or a bare file name found anywhere under PROM_library. Resolution is against
+    the WORKSPACE root, not the repo root — the fix for names that used to
+    resolve to nothing when the code lives in a sub-repo.
+    """
+    fp = Path(filename)
+    if fp.is_absolute():
+        return fp if fp.exists() else None
+    for cand in (PROM_DIR / filename, PROM_LIBRARY_DIR / filename):
+        if cand.exists():
+            return cand
+    name = fp.name.lower()
+    if PROM_LIBRARY_DIR.is_dir():
+        for p in PROM_LIBRARY_DIR.rglob("*"):
+            if p.is_file() and p.name.lower() == name:
+                return p
     return None
 
 
