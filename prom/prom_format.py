@@ -27,6 +27,10 @@ FORMAT_X86_BIOS = "x86-bios"           # \x55\xaa @0 (Voyager/ATI)
 FORMAT_KONA_ARM = "kona-arm"           # 0xbadc0ffe @0 (InfiniteReality)
 FORMAT_MMSC_X86 = "mmsc-x86"           # 0x5aa5a55a @0x18 (MMSC)
 FORMAT_GE_MICROCODE = "ge-microcode"   # "EA\x00\x01" @0 (GE5/GE7)
+FORMAT_GE7_MICROCODE = "ge7-microcode" # 96 6e 00 01 ... @0 (GE7 header)
+FORMAT_HQ3_MICROCODE = "hq3-microcode" # 00 83 82 @0 (Impact HQ3/MGRAS)
+FORMAT_GR2_MICROCODE = "gr2-microcode" # 01 60 00 05 2b 91 @0 (GR2 ucode)
+FORMAT_VPRO_MICROCODE = "vpro-microcode"  # 04 a4 00 00 01 20 c0 00 @0 (Buzz)
 FORMAT_IO4_JFK4 = "io4-jfk4"           # "JFK4"@0: flat MIPS w/ 0x18 header
 FORMAT_IO4_JKSW = "io4-jksw"           # "JKSW"@0: Everest segment table
 FORMAT_MIPS_VECTOR = "mips-vector"     # classic SGI CPU PROM (IP4..IP30)
@@ -54,6 +58,10 @@ NON_MIPS_FORMATS = frozenset({
     FORMAT_KONA_ARM,
     FORMAT_MMSC_X86,
     FORMAT_GE_MICROCODE,
+    FORMAT_GE7_MICROCODE,
+    FORMAT_HQ3_MICROCODE,
+    FORMAT_GR2_MICROCODE,
+    FORMAT_VPRO_MICROCODE,
     FORMAT_TEXT,
     FORMAT_UNKNOWN,
 })
@@ -99,6 +107,15 @@ _MAGIC_AT_ZERO = (
     (b'JKSW', FORMAT_IO4_JKSW),
     (b'JFK4', FORMAT_IO4_JFK4),
     (b'EA\x00\x01', FORMAT_GE_MICROCODE),
+    # Content magics established from the PROM_library corpus (NOT from
+    # filenames -- a name is not evidence). Each is a real shared byte header
+    # observed across the family's images. GE7: 4 images share the exact 16-byte
+    # header; HQ3: 2 share the 3-byte prefix; GR2: 2 share 6 bytes; VPro Buzz: 1
+    # image (weakest evidence, kept because the header is self-consistent).
+    (b'\x96\x6e\x00\x01', FORMAT_GE7_MICROCODE),
+    (b'\x00\x83\x82', FORMAT_HQ3_MICROCODE),
+    (b'\x01\x60\x00\x05\x2b\x91', FORMAT_GR2_MICROCODE),
+    (b'\x04\xa4\x00\x00\x01\x20\xc0\x00', FORMAT_VPRO_MICROCODE),
 )
 
 _DESCRIPTIONS = {
@@ -110,6 +127,10 @@ _DESCRIPTIONS = {
     FORMAT_KONA_ARM: "ARM transport processor firmware (KONA)",
     FORMAT_MMSC_X86: "MMSC controller firmware (x86, 5aa5a55a@0x18)",
     FORMAT_GE_MICROCODE: "GE5/GE7 graphics microcode",
+    FORMAT_GE7_MICROCODE: "GE7 graphics microcode (96 6e 00 01 header)",
+    FORMAT_HQ3_MICROCODE: "Impact HQ3/MGRAS graphics microcode",
+    FORMAT_GR2_MICROCODE: "GR2 graphics microcode",
+    FORMAT_VPRO_MICROCODE: "VPro Buzz transform-engine microcode",
     FORMAT_IO4_JFK4: "IO4 'JFK4' MIPS image (load 0x81800000, code@0x18)",
     FORMAT_IO4_JKSW: JKSW_DESCRIPTION,
     FORMAT_MIPS_VECTOR: "classic SGI MIPS CPU PROM",
