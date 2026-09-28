@@ -143,7 +143,13 @@ def is_mips_vector(data: bytes) -> bool:
     # reclassifies exactly that one chip dump and no real PROM).
     if len(data) < MIN_MIPS_VECTOR_SIZE:
         return False
-    valid = {0x02, 0x04, 0x10, 0x01}   # J, BEQ, COP0, REGIMM
+    valid = {0x02, 0x04, 0x10}   # J, BEQ, COP0 (IP26's cache init)
+    # REGIMM (0x01) is deliberately NOT a valid reset vector: a reset
+    # entry is a jump/branch/cache-op, never a REGIMM branch. The one library
+    # file whose word0 is REGIMM (bins/graphics/vpro/buzz_vpro.bin) is a
+    # structured 3-word-record table, not MIPS code — dropping 0x01 refuses it
+    # and affects no real PROM (measured: REGIMM is the only opcode used by
+    # exactly that one file among 49 mips-vector images).
     if (_word(data, 0) >> 26) & 0x3F in valid:
         return True
     if _word(data, 0) == 0 and ((_word(data, 4) >> 26) & 0x3F) in valid:
