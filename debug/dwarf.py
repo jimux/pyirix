@@ -275,6 +275,59 @@ class DwarfParser:
                 "kind": "union" if die["tag"] == 0x17 else "struct",
                 "size": a.get(AT_byte_size), "members": members}
 
+    def array_count(self, array_die):
+        """Element count of an array_type DIE, or None (subrange upper_bound+1)."""
+        for c in array_die["children"]:
+            cd = self.dies[c]
+            if cd["tag"] == 0x21:                      # subrange_type
+                ub = cd["attrs"].get(0x2f)             # DW_AT_upper_bound
+                if ub is not None:
+                    return ub + 1
+                ct = cd["attrs"].get(0x37)             # DW_AT_count
+                if ct is not None:
+                    return ct
+        return None
+
+    def type_size(self, ref, depth=0):
+        """Byte size of a type DIE (resolves typedefs/array counts), or None.
+
+        A member's OFFSET says where it starts but not how big an ARRAY member
+        is: ``u_psargs[]`` has upper_bound 79, so its size is 80 (PSARGSZ).
+        """
+        if not (isinstance(ref, tuple) and ref[0] == "ref") or depth > 12:
+            return None
+        die = self.dies.get(ref[1])
+        if not die:
+            return None
+        t = die["tag"]
+        a = die["attrs"]
+        if t == 0x24:                                  # base_type
+            return a.get(AT_byte_size)
+        if t == 0x16:                                  # typedef
+            return self.type_size(a.get(AT_type), depth + 1)
+        if t == 0x0f:                                  # pointer (32-bit target)
+            return 4
+        if t in (0x26, 0x35):                          # const / volatile
+            return self.type_size(a.get(AT_type), depth + 1)
+        if t in (0x13, 0x17, 0x04):                    # struct/union/enum
+            return a.get(AT_byte_size)
+        if t == 0x01:                                  # array_type
+            elem = self.type_size(a.get(AT_type), depth + 1)
+            cnt = self.array_count(die)
+            return None if (elem is None or cnt is None) else elem * cnt
+        return None
+
+    def member_sizes(self, die):
+        """{member_name: byte_size} for a struct/union DIE (arrays resolved)."""
+        out = {}
+        for c in die["children"]:
+            cd = self.dies[c]
+            if cd["tag"] != 0x0d:
+                continue
+            out[cd["attrs"].get(AT_name, "?")] = self.type_size(
+                cd["attrs"].get(AT_type))
+        return out
+
     def variables(self):
         """Global variables: name + address (from DW_OP_addr location)."""
         out = []
