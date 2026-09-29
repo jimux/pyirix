@@ -347,6 +347,14 @@ def detect_platform(filename: str) -> Optional[str]:
         return 'ip15'
     elif 'professional' in filename_lower and 'iris' in filename_lower:
         return 'ip4'
+    # SN machines by system name (the ipNN token is absent in these names):
+    # Tezro / Onyx 3000 / Origin 3000 are IP35 (SN1); Onyx2 / Origin 200/2000
+    # are IP27 (SN0). 'origin200' matches both Origin 200 and Origin 2000.
+    elif 'tezro' in filename_lower or 'onyx3000' in filename_lower \
+            or 'origin3000' in filename_lower:
+        return 'ip35'
+    elif 'onyx2' in filename_lower or 'origin200' in filename_lower:
+        return 'ip27'
 
     return None
 
