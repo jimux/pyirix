@@ -42,6 +42,7 @@ FORMAT_MIPS_VECTOR_SWAPPED = "mips-vector-swapped"  # same, raw flash word-swapp
 MIN_MIPS_VECTOR_SIZE = 0x1000
 FORMAT_TEXT = "text-data"              # plain text / data (not firmware)
 FORMAT_SPD_EEPROM = "spd-eeprom"       # JEDEC SDRAM SPD (256 B, multi-field)
+FORMAT_EEPROM_VPD = "eeprom-vpd"       # SGI board serial EEPROM (VPD string table)
 FORMAT_UNKNOWN = "unknown"
 
 #: Formats that are positively NOT a raw MIPS PROM image, and so must be
@@ -49,9 +50,9 @@ FORMAT_UNKNOWN = "unknown"
 #: of these fabricates output. ``sn-container``, ``shdr``, ``io4-jfk4``,
 #: ``io4-jksw`` and ``mips-vector`` are images we CAN slice. ``unknown`` is
 #: included: an image that fails every positive check cannot be vouched for, so
-#: it is refused with a named reason rather than guessed at (the 49 library
-#: files that land here are I2C/EEPROM chip dumps, graphics microcode,
-#: controller/EPROM/flash images and two plain-text files -- none a CPU PROM).
+#: it is refused with a named reason rather than guessed at (the library files
+#: that land here are I2C/EEPROM chip dumps, graphics microcode, and
+#: controller/EPROM/flash images -- none a CPU PROM).
 NON_MIPS_FORMATS = frozenset({
     FORMAT_MIPS_ELF,
     FORMAT_SYSCO_68K,
@@ -64,6 +65,7 @@ NON_MIPS_FORMATS = frozenset({
     FORMAT_GR2_MICROCODE,
     FORMAT_VPRO_MICROCODE,
     FORMAT_SPD_EEPROM,
+    FORMAT_EEPROM_VPD,
     FORMAT_TEXT,
     FORMAT_UNKNOWN,
 })
@@ -140,6 +142,7 @@ _DESCRIPTIONS = {
         "raw-flash SGI MIPS CPU PROM (16-bit word-swapped)",
     FORMAT_TEXT: "plain text / data (not firmware)",
     FORMAT_SPD_EEPROM: "JEDEC SDRAM SPD EEPROM (256 B)",
+    FORMAT_EEPROM_VPD: "SGI board VPD serial EEPROM (24C04/24C512)",
     FORMAT_UNKNOWN: "unrecognised firmware (not a MIPS CPU PROM)",
 }
 
@@ -269,6 +272,60 @@ def is_spd_eeprom(data: bytes) -> bool:
     return True
 
 
+#: SGI board VPD (vital product data) serial-EEPROM images.
+#: The string table is a sequence of 0xC0|len markers each followed by exactly
+#: ``len`` printable-ASCII bytes (measured on every 24C04 image in PROM_library).
+
+
+def _vpd_string_records(data: bytes) -> List[bytes]:
+    """Decode the 0xC0|len length-prefixed ASCII records of an SGI VPD table."""
+    out: List[bytes] = []
+    i = 0
+    n = len(data)
+    while i < n:
+        c = data[i]
+        if c >= 0xC0:
+            length = c & 0x3F
+            seg = data[i + 1:i + 1 + length]
+            if length >= 1 and len(seg) == length and \
+                    all(0x20 <= b < 0x7F for b in seg):
+                out.append(seg)
+                i += 1 + length
+                continue
+        i += 1
+    return out
+
+
+def _is_vpd_part_record(seg: bytes) -> bool:
+    """True for a ``030_xxx_xxx`` (or ``ddd_dddd_ddd``) part-number record."""
+    return (len(seg) == 12 and seg[3:4] == b"_" and seg[8:9] == b"_"
+            and seg[0:3].isdigit() and seg[4:8].isdigit()
+            and seg[9:12].isdigit())
+
+
+def is_eeprom_vpd(data: bytes) -> bool:
+    """True if *data* is an SGI board VPD serial-EEPROM image.
+
+    A multi-field STRUCTURAL test, not a single magic. Two measured forms:
+
+    * a 24C04 (512 B) board EEPROM: byte0 = 0x00 and the SGI VPD string table is
+      present (>= 4 ``0xC0|len`` length-prefixed ASCII records) including the
+      ``030_xxx_xxx`` part-number record. Measured on all seven 24C04 images in
+      PROM_library: each decodes the same field set (vendor, board, serial,
+      part number, revision).
+    * a 24C512 (64 KiB) board EEPROM: magic 0x669955aa at offset 0.
+
+    Neither is a CPU PROM; both are refused by the loader (correctly named).
+    """
+    if len(data) == 512 and data[0] == 0x00:
+        records = _vpd_string_records(data)
+        if len(records) >= 4 and any(_is_vpd_part_record(r) for r in records):
+            return True
+    if len(data) == 0x10000 and data[:4] == b"\x66\x99\x55\xaa":
+        return True
+    return False
+
+
 def detect_prom_format(data: bytes) -> str:
     """Return the firmware format of *data* (one of the ``FORMAT_*`` constants).
 
@@ -304,6 +361,9 @@ def detect_prom_format(data: bytes) -> str:
 
     if is_spd_eeprom(data):
         return FORMAT_SPD_EEPROM
+
+    if is_eeprom_vpd(data):
+        return FORMAT_EEPROM_VPD
 
     if is_text_image(data):
         return FORMAT_TEXT
