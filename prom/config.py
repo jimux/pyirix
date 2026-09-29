@@ -232,6 +232,20 @@ PLATFORMS = {
         has_ioc=2,
         description="Indigo2 with R8000 (MIPS64)"
     ),
+    "ip27": PlatformInfo(
+        name="Origin 200/2000 (Onyx2)",
+        ip_number="IP27",
+        # SN0 container file sizes measured in the corpus (raw flash differs);
+        # ip27prom.img and its possible duplicate.
+        typical_sizes=(912760, 895760),
+        cpu_arch="mips64",  # R10000 (MIPS IV)
+        endian="big",
+        interleave=1,
+        has_mc=False,   # Hub ASIC integrates memory; no IP22-class MC
+        has_hpc=0,      # Hub/IOC3/Bridge, not HPC1/HPC3
+        has_ioc=0,      # IOC3, not IOC2
+        description="Origin 200/2000 Onyx2 (Hub/Xbow/Bridge, SN0 container)"
+    ),
     "ip28": PlatformInfo(
         name="Indigo2 Impact",
         ip_number="IP28",
@@ -270,6 +284,19 @@ PLATFORMS = {
         has_ioc=0,
         description="O2 workstation (CRIME architecture)",
         has_crime=True,
+    ),
+    "ip35": PlatformInfo(
+        name="Origin 3000/Onyx 3000 (Tezro)",
+        ip_number="IP35",
+        # SN1 container file size measured in the corpus (raw flash differs).
+        typical_sizes=(1477560,),
+        cpu_arch="mips64",  # R12000/R14000 (MIPS IV)
+        endian="big",
+        interleave=1,
+        has_mc=False,   # Bedrock/Hub integrates memory; no IP22-class MC
+        has_hpc=0,      # Hub/IOC3/Bridge, not HPC1/HPC3
+        has_ioc=0,      # IOC3, not IOC2
+        description="Origin 3000/Onyx 3000 Tezro (Bedrock, SN1 container)"
     ),
 }
 
