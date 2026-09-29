@@ -174,6 +174,17 @@ class PromCodeImage:
     mapping_note: str = ""
     format: str = FORMAT_MIPS_VECTOR   # see pyirix.prom.prom_format
 
+    def reset_entry(self, endian: str = "big") -> int:
+        """The CPU reset entry for this code slice (the J target at its start).
+
+        Distinct from the SN-container header's ``entry`` field, which is the
+        raw load/entry value (e.g. ``0xc00000001fc00000`` for IP35) -- NOT the
+        address the CPU starts executing at. For IP35 this returns ``0xbfc00400``
+        (the charter's entry); for IP27 ``0xbfc00800``. Apply it to the SLICE
+        (``self.data``), which is what this image is.
+        """
+        return extract_entry_point(self.data, endian)
+
 
 # Cache for loaded PROM data
 _prom_cache: Dict[str, bytes] = {}
