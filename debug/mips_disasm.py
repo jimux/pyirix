@@ -45,7 +45,8 @@ class LuiTracker:
 class MipsDisassembler:
     """MIPS disassembler with SGI hardware annotations."""
 
-    def __init__(self, mode: str = "mips3"):
+    def __init__(self, mode: str = "mips3", code_offset: int = 0,
+                 code_base: Optional[int] = None, code_size: int = 0):
         if not CAPSTONE_AVAILABLE:
             raise RuntimeError("Capstone library not available. Install with: pip install capstone")
 
@@ -60,6 +61,14 @@ class MipsDisassembler:
 
         # Track LUI instructions for address reconstruction
         self.lui_values: Dict[str, LuiTracker] = {}
+
+        # Container code image (SN0/SN1), if any: a decoded JAL target is a
+        # VMA, and turning it back into a FILE offset needs the segment's
+        # origin. For a plain PROM these stay (0, None, 0) and the classic
+        # `addr - PROM_BASE` rule is used unchanged.
+        self.code_offset = code_offset
+        self.code_base = code_base
+        self.code_size = code_size
 
     def disassemble(
         self,
@@ -231,7 +240,10 @@ class MipsDisassembler:
         if mnemonic == "jal":
             try:
                 target = int(op_str, 0)
-                prom_offset = addr_to_prom_offset(target)
+                # Pass the container image so the offset is a FILE offset, not
+                # a slice-relative one (they differ by code_offset for SN0/SN1).
+                prom_offset = addr_to_prom_offset(
+                    target, self.code_offset, self.code_base, self.code_size)
                 if prom_offset is not None:
                     return f"; PROM+0x{prom_offset:x}"
             except ValueError:
@@ -278,7 +290,12 @@ def disassemble_prom(
 
     Args:
         filename: PROM filename
-        offset: Start offset within PROM
+        offset: Start offset within the CODE IMAGE (the MIPS segment). For a
+            plain PROM this equals the raw file offset; for an SN0/SN1
+            container the code segment starts at ``code.file_offset`` (0x1000
+            for ip35prom.img), so the raw file offset is
+            ``offset + code.file_offset`` — pass the code-image offset, not the
+            file offset.
         length: Number of bytes to disassemble (0 = to end or max_instructions)
         max_instructions: Maximum instructions to disassemble
         annotate: Add hardware annotations
@@ -322,7 +339,12 @@ def disassemble_prom(
         from pyirix.prom.config import get_cpu_mode
         mode = get_cpu_mode(meta.platform)
 
-    disasm = MipsDisassembler(mode)
+    disasm = MipsDisassembler(
+        mode,
+        code_offset=code.file_offset,
+        code_base=code.load_address,
+        code_size=code.code_size,
+    )
     lines = disasm.disassemble(data_slice, base_addr, max_instructions, annotate)
 
     # Coverage guard (permanent): a linear sweep that stops early returns a
