@@ -44,6 +44,7 @@ MIN_MIPS_VECTOR_SIZE = 0x1000
 FORMAT_TEXT = "text-data"              # plain text / data (not firmware)
 FORMAT_SPD_EEPROM = "spd-eeprom"       # JEDEC SDRAM SPD (256 B, multi-field)
 FORMAT_EEPROM_VPD = "eeprom-vpd"       # SGI board serial EEPROM (VPD string table)
+FORMAT_NVRAM_ENV = "nvram-env"         # SGI firmware environment EEPROM/NVRAM
 FORMAT_UNKNOWN = "unknown"
 
 #: Formats that are positively NOT a raw MIPS PROM image, and so must be
@@ -68,6 +69,7 @@ NON_MIPS_FORMATS = frozenset({
     FORMAT_GE11_MICROCODE,
     FORMAT_SPD_EEPROM,
     FORMAT_EEPROM_VPD,
+    FORMAT_NVRAM_ENV,
     FORMAT_TEXT,
     FORMAT_UNKNOWN,
 })
@@ -145,6 +147,7 @@ _DESCRIPTIONS = {
     FORMAT_TEXT: "plain text / data (not firmware)",
     FORMAT_SPD_EEPROM: "JEDEC SDRAM SPD EEPROM (256 B)",
     FORMAT_EEPROM_VPD: "SGI board VPD serial EEPROM (24C04/24C512)",
+    FORMAT_NVRAM_ENV: "SGI firmware (ARCS) environment EEPROM/NVRAM",
     FORMAT_GE11_MICROCODE: "GE11/MGRAS microcode (12-byte record table)",
     FORMAT_UNKNOWN: "unrecognised firmware (not a MIPS CPU PROM)",
 }
@@ -347,6 +350,33 @@ def is_ge11_microcode(data: bytes) -> bool:
     return data[0x18:0x20] == _GE11_UCODE_MAGIC
 
 
+#: SGI firmware (ARCS) environment EEPROM / NVRAM. The FULLHOUSE IO backplane
+#: 93CS56 is one: stored 16-bit word-swapped, it contains the ARCS environment
+#: (mem, dksc, scsi(%d)disk(%d), nuunix, debugport, 9600 baud, PST8PDT,
+#: init_env()). A single very distinctive token is enough -- no CPU PROM carries
+#: the ``scsi(%d)disk(%d)`` device-path template.
+_ENV_STRONG = b"scsi(%d)disk(%d)"
+_ENV_TOKENS = (b"dksc", b"init_env(", b"nuunix", b"debugport", b"volhdr",
+               b"console=", b"mem=")
+
+
+def _pair_swap(data: bytes) -> bytes:
+    """Adjacent-byte (16-bit word) swap, undoing a word-swapped EEPROM dump."""
+    return b"".join(data[i:i + 2][::-1] for i in range(0, len(data) - 1, 2))
+
+
+def is_nvram_env(data: bytes) -> bool:
+    """True if *data* is an SGI firmware environment EEPROM/NVRAM image."""
+    if len(data) > 0x10000:
+        return False
+    for cand in (data, _pair_swap(data)):
+        if _ENV_STRONG in cand:
+            return True
+        if sum(1 for t in _ENV_TOKENS if t in cand) >= 3:
+            return True
+    return False
+
+
 def detect_prom_format(data: bytes) -> str:
     """Return the firmware format of *data* (one of the ``FORMAT_*`` constants).
 
@@ -388,6 +418,9 @@ def detect_prom_format(data: bytes) -> str:
 
     if is_eeprom_vpd(data):
         return FORMAT_EEPROM_VPD
+
+    if is_nvram_env(data):
+        return FORMAT_NVRAM_ENV
 
     if is_text_image(data):
         return FORMAT_TEXT
