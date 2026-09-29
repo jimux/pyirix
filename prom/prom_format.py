@@ -78,11 +78,26 @@ NON_MIPS_FORMATS = frozenset({
 # data at 0x100 (hw/mips/sgi_o2.c::sgi_o2_strip_prom_container).
 PROM_CONTAINER_MAGIC = b'PROM'
 PROM_CONTAINER_OFFSET = 0x100
-# SHDR flash segment header: magic 'SHDR' at +0x08, segLen at +0x0c,
-# 64-byte header, segments page-aligned at 256-byte intervals.
+# SHDR flash segment header, measured against hw/mips/sgi_o2.c and the IP32
+# flash (irix-657m IP32prom flash.h / libsk flash.c validHdr/validBody). 64-byte
+# header on 256-byte page boundaries:
+#   reserved(8) @+0x00 | 'SHDR' @+0x08 | segLen @+0x0c
+#   | nameLen @+0x10 | vsnLen @+0x11 | segType @+0x12 | aux @+0x13
+#   | name[32] @+0x14 | version[8] @+0x34 | header-checksum @+0x3c | body @+0x40
+# Both checksums are self-zeroing negated 32-bit big-endian word sums: the
+# header sum covers the 15 words before its checksum word, the body sum covers
+# the body up to (and including) the segment's last aligned word.
 SHDR_SEG_MAGIC = b'SHDR'
 SHDR_SEG_PAGE = 256
 SHDR_SEG_HDR = 0x40
+SHDR_SEG_LEN_OFF = 0x0C
+SHDR_SEG_FIELD_OFF = 0x10        # nameLen/u8, vsnLen/u8, segType/u8, aux/u8
+SHDR_SEG_NAME_OFF = 0x14
+SHDR_SEG_NAME_LEN = 32
+SHDR_SEG_VSN_OFF = 0x34
+SHDR_SEG_VSN_LEN = 8
+SHDR_SEG_HDRSUM_OFF = 0x3C
+SHDR_SEG_BODY_OFF = 0x40
 
 # IO4 'JFK4' image: magic@0, -, loadAddr@0x08, size@0x0c, entry@0x10, ver@0x14,
 # code@0x18. Established by measurement over the 3 library files (load==entry,
@@ -521,6 +536,98 @@ def shdr_flash_offset(data: bytes) -> int:
     return 0
 
 
+def _shdr_word_sum_zero(flash: bytes, start: int, end: int) -> bool:
+    """True iff the big-endian 32-bit word sum over ``[start, end)`` is zero.
+
+    ``end`` is exclusive. Both ranges are checked against ``len(flash)`` so a
+    truncated segment reports False rather than reading past EOF.
+    """
+    if start < 0 or end > len(flash) or start >= end:
+        return False
+    total = 0
+    for off in range(start, end, 4):
+        total = (total + int.from_bytes(flash[off:off + 4], 'big')) & 0xFFFFFFFF
+    return total == 0
+
+
+@dataclass
+class SHDRSegment:
+    """One segment from an O2/IP32 (SHDR) flash image.
+
+    Every field is read from the image; ``header_sum_ok`` / ``body_sum_ok`` are
+    the PROM's own self-zeroing checksum verdicts (the same two QEMU validates
+    in ``sgi_o2_validate_prom_checksums``), so a corrupt segment is named rather
+    than silently sliced. ``label`` is ``name`` or a ``<#n>`` fallback.
+    """
+    offset: int          # flash offset of the 64-byte header
+    length: int          # segLen (header + body)
+    name: str
+    version: str
+    name_len: int
+    vsn_len: int
+    seg_type: int        # 1=code, 3=code w/ subsection table, 0/other=data
+    aux: int
+    first_word: int      # word at +0x00 (the crafted reset branch for code segs)
+    checksum: int        # stored header checksum at +0x3c
+    header_sum_ok: bool
+    body_sum_ok: bool
+
+    @property
+    def label(self) -> str:
+        return self.name or "<#0x{:x}>".format(self.offset)
+
+
+def parse_shdr_segments(flash: bytes) -> List[SHDRSegment]:
+    """Parse the SHDR segment table of an O2/IP32 flash image.
+
+    Segments sit on 256-byte page boundaries; each is a 64-byte header with
+    ``'SHDR'`` at +8 and ``segLen`` at +0xc, followed by its body. The walk
+    mirrors ``hw/mips/sgi_o2.c``; a segment whose ``segLen`` is malformed is
+    skipped (one page forward) rather than trusted, so a corrupt table yields a
+    short list instead of a bogus slice.
+    """
+    segs: List[SHDRSegment] = []
+    off = 0
+    while off + SHDR_SEG_HDR <= len(flash):
+        if flash[off + 8:off + 12] != SHDR_SEG_MAGIC:
+            off += SHDR_SEG_PAGE
+            continue
+        seg_len = int.from_bytes(flash[off + SHDR_SEG_LEN_OFF:off + SHDR_SEG_LEN_OFF + 4], 'big')
+        name = flash[off + SHDR_SEG_NAME_OFF:off + SHDR_SEG_NAME_OFF + SHDR_SEG_NAME_LEN]
+        name = name.split(b'\x00', 1)[0].decode('latin-1')
+        vsn = flash[off + SHDR_SEG_VSN_OFF:off + SHDR_SEG_VSN_OFF + SHDR_SEG_VSN_LEN]
+        vsn = vsn.split(b'\x00', 1)[0].decode('latin-1')
+        # Header checksum covers words [off, off+0x3c) plus the checksum word.
+        header_sum_ok = _shdr_word_sum_zero(flash, off, off + SHDR_SEG_HDRSUM_OFF + 4)
+        body_sum_ok = False
+        if SHDR_SEG_HDR <= seg_len <= len(flash) - off:
+            body_end = off + seg_len
+            last_off = ((body_end + 3) & ~3) - 4
+            if last_off >= off + SHDR_SEG_BODY_OFF + 4:
+                body_sum_ok = _shdr_word_sum_zero(flash, off + SHDR_SEG_BODY_OFF,
+                                                  last_off + 4)
+        segs.append(SHDRSegment(
+            offset=off,
+            length=seg_len,
+            name=name,
+            version=vsn,
+            name_len=flash[off + SHDR_SEG_FIELD_OFF],
+            vsn_len=flash[off + SHDR_SEG_FIELD_OFF + 1],
+            seg_type=flash[off + SHDR_SEG_FIELD_OFF + 2],
+            aux=flash[off + SHDR_SEG_FIELD_OFF + 3],
+            first_word=int.from_bytes(flash[off:off + 4], 'big'),
+            checksum=int.from_bytes(
+                flash[off + SHDR_SEG_HDRSUM_OFF:off + SHDR_SEG_HDRSUM_OFF + 4], 'big'),
+            header_sum_ok=header_sum_ok,
+            body_sum_ok=body_sum_ok,
+        ))
+        if seg_len < SHDR_SEG_HDR or seg_len > len(flash) - off:
+            off += SHDR_SEG_PAGE
+        else:
+            off += (seg_len + SHDR_SEG_PAGE - 1) & ~(SHDR_SEG_PAGE - 1)
+    return segs
+
+
 def shdr_segment_count(flash: bytes) -> int:
     """Count SHDR segments in an O2/IP32 flash image.
 
@@ -528,17 +635,4 @@ def shdr_segment_count(flash: bytes) -> int:
     ``segLen`` at +0xc. Mirrors the walk in hw/mips/sgi_o2.c. Used only for a
     human-readable mapping note.
     """
-    n = 0
-    off = 0
-    while off + SHDR_SEG_HDR <= len(flash):
-        if flash[off + 8:off + 12] != SHDR_SEG_MAGIC:
-            off += SHDR_SEG_PAGE
-            continue
-        seg_len = int.from_bytes(flash[off + 12:off + 16], 'big')
-        n += 1
-        if seg_len < SHDR_SEG_HDR or seg_len > len(flash) - off:
-            off += SHDR_SEG_PAGE
-        else:
-            off += (seg_len + SHDR_SEG_PAGE - 1) & ~(SHDR_SEG_PAGE - 1)
-    return n
-
+    return len(parse_shdr_segments(flash))

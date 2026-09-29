@@ -20,7 +20,8 @@ from .prom_format import (
     FORMAT_IO4_JKSW, FORMAT_MIPS_VECTOR, FORMAT_MIPS_VECTOR_SWAPPED,
     JFK4_CODE_OFFSET,
     detect_prom_format, describe_prom_format,
-    shdr_flash_offset, shdr_segment_count, jfk4_load_address, jfk4_code_size,
+    shdr_flash_offset, SHDRSegment, parse_shdr_segments, SHDR_SEG_BODY_OFF,
+    jfk4_load_address, jfk4_code_size,
     parse_jksw, jksw_entry_segment, swap_words16,
 )
 from .prom_compress import (
@@ -173,6 +174,10 @@ class PromCodeImage:
     container: Optional[SN0ContainerInfo] = None
     mapping_note: str = ""
     format: str = FORMAT_MIPS_VECTOR   # see pyirix.prom.prom_format
+    # For an O2/IP32 SHDR flash image, the parsed segment table. The single
+    # ``load_address`` is the CPU reset base (segment 0 / sloader) only; later
+    # segments execute elsewhere (firmware at 0x81000000). See shdr_segment_vma.
+    shdr_segments: Optional[List[SHDRSegment]] = None
 
     def reset_entry(self, endian: str = "big") -> int:
         """The CPU reset entry for this code slice (the J target at its start).
@@ -425,6 +430,29 @@ def prom_code_base(load_address: int) -> int:
     return phys + 0xa0000000
 
 
+def shdr_segment_vma(segment: SHDRSegment, flash: bytes) -> Optional[int]:
+    """The address an O2/IP32 SHDR *segment* executes at, or None if not code.
+
+    Measured, never assumed. A ``seg_type`` 1 code segment carries a crafted
+    ``beq $0,$0`` reset trampoline in its first word and runs *in place* from
+    the PROM base, so its VMA is ``PROM_BASE + offset`` (why IP32 ``post1`` runs
+    at ``0xBFC04400``). A ``seg_type`` 3 code segment is copied to RAM and
+    declares its own load address in the first two words of its body; the IP32
+    ``firmware`` body starts ``0x81000000, 0x00048e70`` (address, length).
+    Non-code segments (``seg_type`` 0) are data and return None.
+    """
+    if segment.seg_type == 1:
+        return PROM_BASE + segment.offset
+    if segment.seg_type == 3:
+        body = segment.offset + SHDR_SEG_BODY_OFF
+        if body + 8 <= len(flash):
+            addr = int.from_bytes(flash[body:body + 4], 'big')
+            length = int.from_bytes(flash[body + 4:body + 8], 'big')
+            if addr and length:
+                return addr
+    return None
+
+
 def extract_prom_code(data: bytes, endian: str = "big") -> PromCodeImage:
     """Return the MIPS code slice and load address for a PROM image.
 
@@ -544,14 +572,30 @@ def extract_prom_code(data: bytes, endian: str = "big") -> PromCodeImage:
     fmt = detect_prom_format(data)
     if fmt == FORMAT_SHDR:
         off = shdr_flash_offset(data)
-        flash = data[off:]
-        note = ("O2/IP32 SHDR flash: {} segment(s), flash offset 0x{:x}, "
-                "base 0x{:08x}").format(
-                    shdr_segment_count(flash), off, PROM_BASE)
+        flash = data[off:]           # raw big-endian flash; reset vector @base
+        segs = parse_shdr_segments(flash)
+        # The whole file is NOT flat-executable at 0xBFC00000: only the first
+        # segment (sloader) runs at the reset base; post1 runs in place at
+        # base+0x4400 and firmware is copied to 0x81000000 (declared in its own
+        # body). Name each segment and its VMA so a lane cannot disassemble
+        # firmware at 0xBFC00000 and silently get wrong jump targets.
+        parts = []
+        for s in segs:
+            vma = shdr_segment_vma(s, flash)
+            where = " @0x{:08x}".format(vma) if vma is not None else ""
+            bad = "" if (s.header_sum_ok and s.body_sum_ok) else " [BAD SUM]"
+            parts.append("{} (off 0x{:x}, len 0x{:x}, type {}{}){}".format(
+                s.label, s.offset, s.length, s.seg_type, where, bad))
+        note = ("O2/IP32 SHDR flash: {} segment(s), flash offset 0x{:x}; "
+                "reset/base 0x{:08x} is sloader (segment 0) only -- other "
+                "segments run elsewhere: {}").format(
+                    len(segs), off, PROM_BASE, "; ".join(parts) or "none")
         if endian != "big":
             flash = normalize_data(flash, endian)
-        return PromCodeImage(flash, PROM_BASE, off, len(flash), False, None,
-                             note, FORMAT_SHDR)
+        img = PromCodeImage(flash, PROM_BASE, off, len(flash), False, None,
+                            note, FORMAT_SHDR)
+        img.shdr_segments = segs
+        return img
     if fmt == FORMAT_IO4_JFK4:
         # IO4 'JFK4': a 0x18-byte header then a flat MIPS image. Fields are
         # self-consistent on all 3 library files (load==entry, and the size at
