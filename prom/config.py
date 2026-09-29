@@ -86,17 +86,55 @@ def phys_to_kseg1(addr: int) -> int:
     return addr
 
 
-def prom_offset_to_addr(offset: int) -> int:
-    """Convert PROM file offset to KSEG1 address."""
-    return PROM_BASE + offset
+def prom_offset_to_addr(offset: int, code_offset: int = 0,
+                        code_base: int = PROM_BASE) -> int:
+    """Convert a PROM FILE offset to its address.
+
+    Plain PROM: ``code_offset == 0`` and ``code_base == PROM_BASE``, so this is
+    the classic ``PROM_BASE + offset``. SN0/SN1 container: the MIPS image starts
+    at ``code_offset`` and is based at ``code_base`` (both from the container
+    header, i.e. ``PromCodeImage.code_offset``/``.code_base``), so a raw file
+    offset must be rebased: ``code_base + (offset - code_offset)``.
+
+    Carrying the classic form across a container lands every address off by
+    ``code_offset`` — 0x1000 for ``ip35prom.img`` (code offset 0x1000 at header
+    field 0x98). Callers that have a ``PromCodeImage`` (from
+    ``load_prom_code``/``extract_prom_code``) MUST pass its ``code_offset`` and
+    ``code_base`` rather than assume zero.
+    """
+    return code_base + (offset - code_offset)
 
 
-def addr_to_prom_offset(addr: int) -> Optional[int]:
-    """Convert KSEG1/KSEG0 PROM address to file offset."""
-    # KSEG1 address
+def addr_to_prom_offset(addr: int, code_offset: int = 0,
+                        code_base: Optional[int] = None,
+                        code_size: int = 0) -> Optional[int]:
+    """Convert a PROM address to its FILE offset (container-aware).
+
+    ``code_offset``/``code_base``/``code_size`` come from the container header
+    (``PromCodeImage``). When ``code_base`` is given, the address is mapped inside
+    that code segment first; otherwise — and for a plain PROM — the classic
+    KSEG1/KSEG0 rule is used.
+
+    Address-form note: ``PromCodeImage.code_base`` is the **KSEG1** (0xbfc00000)
+    form (``prom_code_base`` = phys + 0xa0000000). The same bytes are reachable at
+    the K2 / "compat" form ``0xC0000000_xxxxxxxx`` (low 32 bits = phys + 0x1fc00000),
+    which differs from ``code_base`` by 0xA0000000. Both forms are accepted here.
+    """
+    if code_base is not None and code_size:
+        lo_base = code_base
+        hi_base = code_base + code_size
+        for cand in (addr, addr & 0xFFFFFFFF):
+            if lo_base <= cand < hi_base:
+                return code_offset + (cand - code_base)
+        # K2/compat form: its 32-bit base is code_base - 0xA0000000
+        k2_base = lo_base - 0xA0000000
+        for cand in (addr, addr & 0xFFFFFFFF):
+            if k2_base <= cand < k2_base + code_size:
+                return code_offset + (cand - k2_base)
+    # Classic KSEG1
     if 0xbfc00000 <= addr < 0xc0000000:
         return addr - 0xbfc00000
-    # KSEG0 address
+    # Classic KSEG0
     if 0x9fc00000 <= addr < 0xa0000000:
         return addr - 0x9fc00000
     return None
