@@ -82,6 +82,7 @@ def load_sections(path):
     for nameoff, off, sz in secs:
         out[nm(nameoff)] = d[off:off+sz]
     out["__be__"] = be
+    out["__is64__"] = is64
     return out
 
 
@@ -89,6 +90,7 @@ class DwarfParser:
     def __init__(self, path):
         s = load_sections(path)
         self.be = s["__be__"]
+        self.is64 = s.get("__is64__", False)
         self.e = ">" if self.be else "<"
         self.info = s.get(".debug_info", b"")
         self.abbrev = s.get(".debug_abbrev", b"")
@@ -174,7 +176,21 @@ class DwarfParser:
             unit_len, p = self._u(4, p)
             cu_end = p + unit_len
             ver, p = self._u(2, p)
-            abbrev_off, p = self._u(4, p)
+            # SGI MIPS_DWARF: a 64-bit object uses an 8-byte debug_abbrev_offset
+            # in the CU header (4-byte unit_length, 2-byte version, 8-byte
+            # abbrev_off, 1-byte addr_size); a 32-bit object uses the standard
+            # 4-byte offset. Choose by ELF class, but validate the address-size
+            # byte (must be 4 or 8) and fall back to the other width otherwise,
+            # so a variant that disagrees is still parsed rather than misread.
+            widths = (8, 4) if self.is64 else (4, 8)
+            chosen = None
+            for w in widths:
+                q = p
+                off, q = self._u(w, q)
+                if info[q] in (4, 8):
+                    chosen = (off, q)
+                    break
+            abbrev_off, p = chosen if chosen else self._u(4, p)
             addr_size = info[p]; p += 1
             tbl = self._abbrev_table(abbrev_off)
             stack = []  # parent offsets for children nesting
