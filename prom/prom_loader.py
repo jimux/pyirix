@@ -212,10 +212,12 @@ def get_prom_path(filename: str) -> Optional[Path]:
     """Resolve a PROM by absolute path, or by name/path under PROM_library.
 
     Accepts: an absolute path; a workspace-relative path INCLUDING the
-    'PROM_library/' prefix; a path relative to PROM_library ('bins/cpu/...');
-    or a bare file name found anywhere under PROM_library. Resolution is against
-    the WORKSPACE root, not the repo root — the fix for names that used to
-    resolve to nothing when the code lives in a sub-repo.
+    'PROM_library/' prefix; a path relative to PROM_library ('bins/cpu/...') or
+    to the library's 'bins/' ('cpu/ip35/...'); a bare file name found in the
+    per-platform directories under PROM_library/bins/cpu/<platform>/; or a bare
+    file name found anywhere under PROM_library. Resolution is against the
+    WORKSPACE root, not the repo root — the fix for names that used to resolve
+    to nothing when the code lives in a sub-repo.
     """
     fp = Path(filename)
     if fp.is_absolute():
@@ -223,6 +225,22 @@ def get_prom_path(filename: str) -> Optional[Path]:
     for cand in (PROM_DIR / filename, PROM_LIBRARY_DIR / filename):
         if cand.exists():
             return cand
+    # Library layout: PROM_library/bins/cpu/<platform>/<file>. Try the path
+    # relative to bins/, and the platform dirs by name, before the generic
+    # recursive fallback (so a platform-prefixed name is unambiguous and fast).
+    bins = PROM_LIBRARY_DIR / "bins"
+    cpu = bins / "cpu"
+    for cand in (bins / filename, cpu / filename):
+        if cand.exists():
+            return cand
+    for plat in PLATFORMS:
+        cand = cpu / plat / filename
+        if cand.exists():
+            return cand
+    if cpu.is_dir():
+        for d in sorted(cpu.iterdir()):
+            if d.is_dir() and (d / filename).exists():
+                return d / filename
     name = fp.name.lower()
     if PROM_LIBRARY_DIR.is_dir():
         for p in PROM_LIBRARY_DIR.rglob("*"):
