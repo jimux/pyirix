@@ -41,6 +41,7 @@ FORMAT_MIPS_VECTOR_SWAPPED = "mips-vector-swapped"  # same, raw flash word-swapp
 # PROM (see is_mips_vector). 4 KiB, vs 8 KiB for the byte-swapped path.
 MIN_MIPS_VECTOR_SIZE = 0x1000
 FORMAT_TEXT = "text-data"              # plain text / data (not firmware)
+FORMAT_SPD_EEPROM = "spd-eeprom"       # JEDEC SDRAM SPD (256 B, multi-field)
 FORMAT_UNKNOWN = "unknown"
 
 #: Formats that are positively NOT a raw MIPS PROM image, and so must be
@@ -62,6 +63,7 @@ NON_MIPS_FORMATS = frozenset({
     FORMAT_HQ3_MICROCODE,
     FORMAT_GR2_MICROCODE,
     FORMAT_VPRO_MICROCODE,
+    FORMAT_SPD_EEPROM,
     FORMAT_TEXT,
     FORMAT_UNKNOWN,
 })
@@ -137,6 +139,7 @@ _DESCRIPTIONS = {
     FORMAT_MIPS_VECTOR_SWAPPED:
         "raw-flash SGI MIPS CPU PROM (16-bit word-swapped)",
     FORMAT_TEXT: "plain text / data (not firmware)",
+    FORMAT_SPD_EEPROM: "JEDEC SDRAM SPD EEPROM (256 B)",
     FORMAT_UNKNOWN: "unrecognised firmware (not a MIPS CPU PROM)",
 }
 
@@ -240,6 +243,32 @@ def is_text_image(data: bytes) -> bool:
     return printable / len(data) >= 0.90
 
 
+#: JEDEC SPD DRAM device-type codes (byte 2): FPM/EDO/PSDRAM/SDRAM families.
+_SPD_DRAM_TYPES = frozenset({0x01, 0x02, 0x03, 0x04, 0x07})
+
+
+def is_spd_eeprom(data: bytes) -> bool:
+    """True if *data* is a JEDEC SDRAM SPD EEPROM image (256 bytes).
+
+    A multi-field STRUCTURAL test, not a single magic: byte0 = number of bytes
+    used (0x80), byte2 = DRAM device type, byte3 = row address bits, byte4 =
+    column address bits, byte5 = module ranks. Several INDEPENDENT standard SPD
+    fields must agree, so a coincidental match is very unlikely. Measured on the
+    seven SPD images in PROM_library: all decode to SDRAM with row=13 and
+    columns=11 (1 GB) / 10 (512 MB), matching their part numbers."""
+    if len(data) != 256 or data[0] != 0x80:
+        return False
+    if data[2] not in _SPD_DRAM_TYPES:
+        return False
+    if not (0x0B <= data[3] <= 0x10):      # row address bits
+        return False
+    if not (0x08 <= data[4] <= 0x0C):      # column address bits
+        return False
+    if data[5] not in (1, 2, 4):           # module banks / ranks
+        return False
+    return True
+
+
 def detect_prom_format(data: bytes) -> str:
     """Return the firmware format of *data* (one of the ``FORMAT_*`` constants).
 
@@ -272,6 +301,9 @@ def detect_prom_format(data: bytes) -> str:
 
     if len(data) >= 0x1C and data[0x18:0x1C] == b'\x5a\xa5\xa5\x5a':
         return FORMAT_MMSC_X86
+
+    if is_spd_eeprom(data):
+        return FORMAT_SPD_EEPROM
 
     if is_text_image(data):
         return FORMAT_TEXT
