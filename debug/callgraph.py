@@ -12,7 +12,7 @@ kdataref.py to find where a function's pointer is stored (dispatch tables).
 import json, struct, sys, bisect, os, collections
 
 ELF = os.environ.get("KELF", "/workspace/_golden_extract/unix")
-SYMS = os.environ.get("KSYMS", "/workspace/ip54_kernel_symbols_golden.json")
+SYMS = os.environ.get("KSYMS", "kernel_symbols.json")
 CG = os.environ.get("KCG", "/workspace/xsgi_callgraph.json")
 
 

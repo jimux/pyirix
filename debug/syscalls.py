@@ -10,7 +10,7 @@ via lui+ori; small GFX_* ints are reported separately if loaded to $a1.
 import json, struct, sys, bisect, os
 
 ELF = os.environ.get("KELF", "/workspace/_golden_extract/unix")
-SYMS = os.environ.get("KSYMS", "/workspace/ip54_kernel_symbols_golden.json")
+SYMS = os.environ.get("KSYMS", "kernel_symbols.json")
 
 # IRIX ioctl direction bits
 IOC_VOID = 0x20000000; IOC_OUT = 0x40000000; IOC_IN = 0x80000000

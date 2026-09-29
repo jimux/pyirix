@@ -3,7 +3,7 @@
 Static; resolves caller PCs to the enclosing function via golden symbols."""
 import json, struct, sys, bisect, os
 ELF = os.environ.get("KELF", "/workspace/_golden_extract/unix")
-SYMS = os.environ.get("KSYMS", "/workspace/ip54_kernel_symbols_golden.json")
+SYMS = os.environ.get("KSYMS", "kernel_symbols.json")
 
 
 def load_text(elf):

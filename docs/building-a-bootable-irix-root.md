@@ -1,17 +1,17 @@
 # Building a bootable IRIX root from scratch with pyirix
 
-This document describes how the pyirix filesystem tooling was used to build a minimal IRIX 6.5 root filesystem **entirely from scratch** — no real install, no `mkfs.xfs`, no disk imaging — that boots the emulated SGI IP54 all the way to an interactive single-user shell. It doubles as a worked example of the EFS/XFS creation API and a record of the IRIX boot requirements we reverse-engineered along the way.
+This document describes how the pyirix filesystem tooling was used to build a minimal IRIX 6.5 root filesystem **entirely from scratch** — no real install, no `mkfs.xfs`, no disk imaging — that booted an earlier, since-retired paravirtual machine all the way to an interactive single-user shell. The filesystem-building part is general; the boot procedure below was specific to that machine and is kept as a record. It doubles as a worked example of the EFS/XFS creation API and a record of the IRIX boot requirements we reverse-engineered along the way.
 
 ## TL;DR
 
 `pyirix.xfs.mkfs` writes a valid IRIX **V1-directory XFS** from scratch; `pyirix.xfs.operations` populates it with files, directories, symlinks, and device nodes. `pyirix_qemu/build_minimal_root.py` ties these together: it copies the kernel and a handful of binaries out of a reference disk, lays down a minimal `/etc/inittab` plus the `/dev` and `/hw` plumbing, and produces a disk image that
 
 - passes IRIX's own `xfs_check` clean, and
-- boots IRIX 6.5 on `sgi-ip54` to `INIT: SINGLE USER MODE` and a working `#` shell prompt.
+- booted IRIX 6.5 on that machine to `INIT: SINGLE USER MODE` and a working `#` shell prompt.
 
 ```bash
 python3 -m pyirix_qemu.build_minimal_root \
-    --source vm_instances/ip54-test/disk.qcow2 \
+    --source vm_instances/irix655-test/disk.qcow2 \
     --out /tmp/minroot.img --size-mb 96
 ```
 
@@ -39,7 +39,7 @@ Every entry below was made mandatory by an observed IRIX boot failure; the "symp
 
 | Path | Kind | Why it's needed | Symptom if missing |
 |------|------|-----------------|--------------------|
-| `/unix.new` | file | The IP54-patched kernel the bootloader actually loads (NVRAM bootfile is `/unix.new`, not `/unix`) | `Unable to load bootfile` |
+| `/unix.new` | file | The patched kernel the bootloader actually loads (NVRAM bootfile is `/unix.new`, not `/unix`) | `Unable to load bootfile` |
 | `/etc/init` | symlink → `../sbin/init` | The kernel icode exec's the literal path `/etc/init` (`kern/ml/csu.s`) | `PANIC: init died (what=0x2)` (ENOENT) |
 | `/sbin/init` | file | PID 1 (dynamically linked, n32) | — |
 | `/sbin/sh` | file | The single-user shell (statically linked) | shell can't start |
@@ -71,7 +71,7 @@ The assembler reads the kernel and binaries out of a reference disk (so we don't
 # VH-wrapped image (bootable on the PROM); use --raw for a bare partition that
 # IRIX's `xfs_check -f` reads directly.
 python3 -m pyirix_qemu.build_minimal_root \
-    --source vm_instances/ip54-test/disk.qcow2 \
+    --source vm_instances/irix655-test/disk.qcow2 \
     --out /tmp/minroot.img --size-mb 96
 ```
 
@@ -101,7 +101,7 @@ with open_disk_image("/tmp/root.img", writable=True) as f:
 
 ## How to boot and validate it
 
-The IP54 machine attaches exactly one disk (`drive_get(IF_MTD, 0, 0)`), so booting a custom root means presenting it as that disk. **Never overwrite the shared instance disk** — set up a throwaway instance instead:
+The retired machine attached exactly one disk (`drive_get(IF_MTD, 0, 0)`), so booting a custom root means presenting it as that disk. **Never overwrite the shared instance disk** — set up a throwaway instance instead:
 
 ```bash
 # 1. Convert the raw image to qcow2 (the instance disk format).
@@ -111,8 +111,8 @@ qemu-img convert -f raw -O qcow2 /tmp/minroot.img /tmp/minroot.qcow2
 #    reference NVRAM/manifest (NVRAM carries the console + boot settings).
 mkdir -p vm_instances/minroot-boot
 cp /tmp/minroot.qcow2            vm_instances/minroot-boot/disk.qcow2
-cp vm_instances/ip54-test/nvram.bin.golden vm_instances/minroot-boot/nvram.bin
-cp vm_instances/ip54-test/manifest.json     vm_instances/minroot-boot/manifest.json   # then edit "name"
+cp vm_instances/irix655-test/nvram.bin.golden vm_instances/minroot-boot/nvram.bin
+cp vm_instances/irix655-test/manifest.json     vm_instances/minroot-boot/manifest.json   # then edit "name"
 
 # 3. Boot it (MCP): qemu_session_start instance=minroot-boot autoload=true
 # 4. Clean up: vm_instance_delete minroot-boot
@@ -123,7 +123,7 @@ To validate the filesystem without booting, run IRIX's own checker on a `--raw` 
 ## What a successful boot looks like
 
 ```
-NOTICE: pvdisk: IP54 paravirtual disk, 196672 sectors (96 MB), root partition 0 at LBA 64
+NOTICE: pvdisk: paravirtual disk, 196672 sectors (96 MB), root partition 0 at LBA 64
 Root on device /hw/scsi_ctlr/0/target/1/lun/0/disk/partition/0/block (fstype xfs)
 INIT: SINGLE USER MODE
 #
@@ -143,7 +143,7 @@ INITTAB: su:S:wait:/sbin/sh </dev/console >/dev/console 2>&1
 
 Each boot attempt surfaced one missing piece; the IRIX kernel's error messages were precise enough to fix it directly. This sequence is worth keeping because it documents exactly what IRIX requires:
 
-1. **`Unable to load bootfile`** — the NVRAM bootfile is `/unix.new` (the IP54-patched kernel), not `/unix`. Copied `/unix.new`.
+1. **`Unable to load bootfile`** — the NVRAM bootfile is `/unix.new` (the patched kernel), not `/unix`. Copied `/unix.new`.
 2. **`PANIC: init died (why=1, what=0x2)`** — `what=0x2` is ENOENT. The kernel icode exec's the literal `/etc/init` (`kern/ml/csu.s:626`), which on real disks is a symlink to `../sbin/init`. Added the symlink (this is why `create_symlink` had to exist).
 3. **`Unable to mount hwgfs error = 2`** — `hwgfs` (the hardware graph) mounts at `/hw`, which must exist as a directory. Added `/hw`.
 4. Non-fatal noise that single user tolerates: `Failed to add swap file /dev/swap error 2` (we ship no swap partition), and `Cannot open /etc/TIMEZONE` / `/etc/ioctl.syscon` / `/var/adm/utmp` / `/etc/passwd damaged` / `Can't start /bin/csh` (all optional userland files init warns about and continues past).

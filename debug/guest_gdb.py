@@ -5,7 +5,7 @@ and this connects gdb-multiarch to the live kernel, sets (hardware) breakpoints
 at kernel VAs, runs the guest until a breakpoint hits (e.g. `panic`), and dumps
 the full register state + a stack scan for return addresses + symbolized PCs.
 
-Symbols come from the disk-kernel JSON (ip54_kernel_symbols_disk.json) — the
+Symbols come from a JSON generated from the running kernel ($KSYMS) — the
 running /unix.new — NOT from irix_unix.elf (a different build).  gdb breakpoints
 use raw addresses; symbolization is done here in Python.
 
@@ -17,6 +17,7 @@ Typical use (the guest must already be booted+logged-in and about to crash):
 """
 import json
 import bisect
+import os
 import subprocess
 
 try:
@@ -24,12 +25,12 @@ try:
 except ImportError:  # run as a bare script
     from toolchain import resolve_gdb
 
-# WARNING: ip54_kernel_symbols_disk.json is STALE vs the golden kernel — every
+# WARNING: a symbol JSON from any other kernel build is STALE — every
 # address is off (splx, idev*, qcntl* all wrong), which makes gdb breakpoints
-# silently hit WRONG addresses.  ip54_kernel_symbols_golden.json is regenerated
+# silently hit WRONG addresses.  The symbol JSON must be regenerated
 # from the actual golden /unix (gen_golden_syms.py).  When the kernel is rebuilt,
 # regenerate it.  See memory kernel_symbol_drift.
-SYMS_JSON = "/workspace/ip54_kernel_symbols_golden.json"
+SYMS_JSON = os.environ.get("KSYMS", "kernel_symbols.json")
 
 
 class SymbolDB:
@@ -73,7 +74,7 @@ class SymbolDB:
 class GuestGDB:
     def __init__(self, port=1234, syms=SYMS_JSON, replay=False, kernel_elf=None):
         """port: gdbstub TCP port.  replay: True if the QEMU session was started
-        with rr=replay (enables reverse-* commands; see replay_debugging_ip54).
+        with rr=replay (enables reverse-* commands).
         kernel_elf: path to a kernel ELF whose symbols are loaded INTO gdb via
         add-symbol-file, so backtraces/`info symbol` resolve names natively."""
         self.port = port
@@ -209,7 +210,7 @@ class GuestGDB:
         kind: 'w' write (watch), 'r' read (rwatch), 'a' access (awatch).
         The gdbstub plants these via the Z2/Z3/Z4 packets.
 
-        KNOWN LIMITATION (validated 2026-06-12 on this sgi-ip54 build): gdb
+        KNOWN LIMITATION (validated 2026-06-12): gdb
         hardware watchpoints PLANT but never FIRE here — even on `lbolt`, which
         the kernel writes 100Hz.  Kernel data lives in MIPS KSEG0/KSEG1
         (unmapped, direct-mapped) and this QEMU's TCG watchpoint check does not
@@ -217,7 +218,7 @@ class GuestGDB:
         DO work.  For reliable "trap any write to phys addr X" use a TCG memory
         plugin (qemu_plugin_register_vcpu_mem_cb; CONFIG_PLUGIN is enabled), or
         reverse-debug from the corrupted state.  This method is kept for the day
-        the QEMU watchpoint path is fixed.  See [[replay_debugging_ip54]]."""
+        the QEMU watchpoint path is fixed."""
         verb = {"w": "watch", "r": "rwatch", "a": "awatch"}[kind]
         cmds = self._preamble()
         cmds.append(f"{verb} {self._resolve_data(expr)}")
