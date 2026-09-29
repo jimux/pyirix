@@ -31,6 +31,7 @@ FORMAT_GE7_MICROCODE = "ge7-microcode" # 96 6e 00 01 ... @0 (GE7 header)
 FORMAT_HQ3_MICROCODE = "hq3-microcode" # 00 83 82 @0 (Impact HQ3/MGRAS)
 FORMAT_GR2_MICROCODE = "gr2-microcode" # 01 60 00 05 2b 91 @0 (GR2 ucode)
 FORMAT_VPRO_MICROCODE = "vpro-microcode"  # 04 a4 00 00 01 20 c0 00 @0 (Buzz)
+FORMAT_GE11_MICROCODE = "ge11-microcode"  # 12-byte ge_ucode records (GE11/Impact)
 FORMAT_IO4_JFK4 = "io4-jfk4"           # "JFK4"@0: flat MIPS w/ 0x18 header
 FORMAT_IO4_JKSW = "io4-jksw"           # "JKSW"@0: Everest segment table
 FORMAT_MIPS_VECTOR = "mips-vector"     # classic SGI CPU PROM (IP4..IP30)
@@ -64,6 +65,7 @@ NON_MIPS_FORMATS = frozenset({
     FORMAT_HQ3_MICROCODE,
     FORMAT_GR2_MICROCODE,
     FORMAT_VPRO_MICROCODE,
+    FORMAT_GE11_MICROCODE,
     FORMAT_SPD_EEPROM,
     FORMAT_EEPROM_VPD,
     FORMAT_TEXT,
@@ -143,6 +145,7 @@ _DESCRIPTIONS = {
     FORMAT_TEXT: "plain text / data (not firmware)",
     FORMAT_SPD_EEPROM: "JEDEC SDRAM SPD EEPROM (256 B)",
     FORMAT_EEPROM_VPD: "SGI board VPD serial EEPROM (24C04/24C512)",
+    FORMAT_GE11_MICROCODE: "GE11/MGRAS microcode (12-byte record table)",
     FORMAT_UNKNOWN: "unrecognised firmware (not a MIPS CPU PROM)",
 }
 
@@ -326,6 +329,24 @@ def is_eeprom_vpd(data: bytes) -> bool:
     return False
 
 
+#: GE11 (Impact/MGRAS) microcode image: an address table of ``ge_ucode``
+#: records (in-tree struct: unsigned short uword2 + pad + two uint32 = 12 bytes),
+#: zero-filled at the unused low addresses. Measured on all three images in
+#: PROM_library (ge11, ge11_revB, ge11_impact): size is a multiple of 12, the
+#: first 24 bytes (addresses 0..1) are zero, and the first written record
+#: carries the signature below.
+_GE11_UCODE_MAGIC = b"\x8c\xf8\x00\x00\xf9\xc0\x07\xc8"
+
+
+def is_ge11_microcode(data: bytes) -> bool:
+    """True if *data* is a GE11/MGRAS microcode image (12-byte record table)."""
+    if len(data) < 0x10000 or len(data) % 12 != 0:
+        return False
+    if data[0:0x18] != b"\x00" * 0x18:
+        return False
+    return data[0x18:0x20] == _GE11_UCODE_MAGIC
+
+
 def detect_prom_format(data: bytes) -> str:
     """Return the firmware format of *data* (one of the ``FORMAT_*`` constants).
 
@@ -358,6 +379,9 @@ def detect_prom_format(data: bytes) -> str:
 
     if len(data) >= 0x1C and data[0x18:0x1C] == b'\x5a\xa5\xa5\x5a':
         return FORMAT_MMSC_X86
+
+    if is_ge11_microcode(data):
+        return FORMAT_GE11_MICROCODE
 
     if is_spd_eeprom(data):
         return FORMAT_SPD_EEPROM
