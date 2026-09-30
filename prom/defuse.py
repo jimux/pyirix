@@ -212,8 +212,20 @@ def propagate_function(
         elif op == 0 and _fn(w) == 0x25:     # or rd, rs, rt
             a, b = regs.get(_rs(w), UNKNOWN), regs.get(_rt(w), UNKNOWN)
             setting(_rd(w), a | b if isinstance(a, int) and isinstance(b, int) else UNKNOWN)
-        elif op in (0x37, 0x23, 0x1B, 0x27, 0x33):  # ld/lw/ldl/lwu/ldr -> UNKNOWN
-            setting(_rt(w), UNKNOWN)
+        elif op in (0x37, 0x23, 0x1B, 0x27, 0x33):  # ld/lw/ldl/lwu/ldr
+            # The PROM image IS its own memory: a load from a *known* address
+            # yields a known value (this is what resolves a pointer loaded out
+            # of a table).  Unknown base -> UNKNOWN (no guess).
+            base = regs.get(_rs(w), UNKNOWN)
+            val = UNKNOWN
+            if isinstance(base, int):
+                addr = base + _simm(w)
+                n = 8 if op == 0x37 else 4
+                off = addr - sl.va_base
+                if 0 <= off and off + n <= len(sl.code):
+                    fmt = (">Q" if n == 8 else ">I") if sl.big_endian else ("<Q" if n == 8 else "<I")
+                    val = struct.unpack_from(fmt, sl.code, off)[0]
+            setting(_rt(w), val)
         elif op in (0x02, 0x03):             # j/jal: caller-saved clobbered
             for r in CALLER_SAVED:
                 regs[r] = UNKNOWN
