@@ -20,12 +20,19 @@ class RegisterDef:
 
 @dataclass
 class DeviceDef:
-    """Definition of a hardware device."""
+    """Definition of a hardware device.
+
+    ``platform`` tags a device that exists only on one SGI platform (e.g. the
+    IP35 Bedrock/HSPEC blocks); ``None`` means it is shared/legacy and is
+    annotated for any platform. This lets the decoder annotate an IP35 PROM with
+    the IP35 map instead of the IP22/IP24 default.
+    """
     name: str
     base_address: int
     size: int
     registers: List[RegisterDef]
     description: str
+    platform: Optional[str] = None
 
 
 # Memory Controller (MC) registers from mc.cpp
@@ -375,7 +382,68 @@ BRIDGE_REGISTERS = [
 
 
 # Build device definitions
+# ---------------------------------------------------------------------------
+# IP35 (Origin 3000 / Onyx 3000 / Tezro) — Bedrock / SN1.
+# Registers/offsets below are MEASURED from the ip35prom.img decode this
+# session (HSPEC console cells, Bedrock NI doorbell/cells, ELSC channel block);
+# they are tagged platform="ip35" so they annotate only IP35 PROMs.
+# ---------------------------------------------------------------------------
+IP35_HSPEC_CONSOLE_REGISTERS = [
+    RegisterDef("BAUD", 0x08, 4, "RW", "Console baud divisor (PROM writes 0xb71b00/N)"),
+    RegisterDef("STATUS", 0x28, 4, "RW", "Console status (bit0 = char ready; also bit 0x40)"),
+    RegisterDef("CHAR", 0x80, 4, "RW", "Console char register (write=tx, read=rx; input at 0xbfc0cda0)"),
+    RegisterDef("CHAR2", 0xA8, 4, "RW", "Console char register (secondary)"),
+]
+
+IP35_NI_REGISTERS = [
+    RegisterDef("UNIT_SELECT", 0x20, 4, "R", "NI unit-select read (unit = value | 0x10)"),
+    RegisterDef("DOORBELL", 0x190010, 4, "RW", "NI doorbell (writable + sticky)"),
+    RegisterDef("CELL_8018", 0x8018, 4, "RW", "NI cell 0x8018 (memory-presence reply)"),
+    RegisterDef("CELL_8058", 0x8058, 4, "RW", "NI cell 0x8058"),
+]
+
+IP35_ELSC_REGISTERS = [
+    RegisterDef("CH0_STATUS", 0xC000, 4, "R", "ELSC channel 0 status (PROM reads 0x01E0C000)"),
+    RegisterDef("CH0_1", 0xC020, 4, "R", "ELSC channel 0 register (0x01E0C020)"),
+    RegisterDef("CH0_2", 0xC038, 4, "R", "ELSC channel 0 register (0x01E0C038)"),
+    RegisterDef("OPBLOCK", 0xE10000, 4, "RW", "ELSC op block (0x01E10000 + (ch<<33))"),
+]
+
+
 DEVICES = {
+    # IP35-only blocks (annotate only when platform == "ip35").
+    "HSPEC_IP35": DeviceDef(
+        name="HSPEC console (IP35)",
+        base_address=0x30000000,
+        size=0x1000,
+        registers=IP35_HSPEC_CONSOLE_REGISTERS,
+        description="IP35 HSPEC console/UART block (seed 0x9000000030000000)",
+        platform="ip35",
+    ),
+    "NI_IP35": DeviceDef(
+        name="Bedrock NI (IP35)",
+        base_address=0x01000000,
+        size=0x200000,
+        registers=IP35_NI_REGISTERS,
+        description="IP35 Bedrock Node Interface (doorbell, unit select, cells)",
+        platform="ip35",
+    ),
+    "ELSC_IP35": DeviceDef(
+        name="ELSC (IP35)",
+        base_address=0x01E00000,
+        size=0x20000,
+        registers=IP35_ELSC_REGISTERS,
+        description="IP35 Bedrock ELSC channel block (0x01E0C000/0x01E10000)",
+        platform="ip35",
+    ),
+    "MC_IP35": DeviceDef(
+        name="Memory Controller (IP35)",
+        base_address=0x1fa00000,
+        size=0x20000,
+        registers=MC_REGISTERS,
+        description="IP35 integrated MC (Bedrock/Hub)",
+        platform="ip35",
+    ),
     "MC": DeviceDef(
         name="Memory Controller",
         base_address=0xbfa00000,
@@ -436,16 +504,26 @@ DEVICES = {
 }
 
 
-def annotate_address(addr: int) -> Optional[Tuple[str, str, str]]:
+def annotate_address(
+    addr: int, platform: Optional[str] = None
+) -> Optional[Tuple[str, str, str]]:
     """
     Annotate a hardware address with device and register information.
+
+    ``platform`` selects platform-specific blocks: a device tagged for a
+    specific platform is only considered when that platform is requested, so an
+    IP35 PROM is annotated with the IP35 map rather than the IP22/IP24 default.
 
     Returns:
         Tuple of (device_name, register_name, description) or None if unknown.
     """
     # Sort devices by size (smaller first) to check more specific regions first
     # This ensures IOC2 is checked before HPC3 since IOC2 is within HPC3's range
-    sorted_devices = sorted(DEVICES.items(), key=lambda x: x[1].size)
+    sorted_devices = sorted(
+        (kv for kv in DEVICES.items()
+         if kv[1].platform is None or kv[1].platform == platform),
+        key=lambda x: x[1].size,
+    )
 
     for device_id, device in sorted_devices:
         if device.base_address <= addr < device.base_address + device.size:
@@ -528,9 +606,9 @@ def annotate_address(addr: int) -> Optional[Tuple[str, str, str]]:
     return None
 
 
-def format_annotation(addr: int) -> str:
-    """Format an address annotation as a string."""
-    result = annotate_address(addr)
+def format_annotation(addr: int, platform: Optional[str] = None) -> str:
+    """Format an address annotation as a string (platform-aware)."""
+    result = annotate_address(addr, platform)
     if result:
         device, reg, desc = result
         return f"{device}.{reg} ; {desc}"

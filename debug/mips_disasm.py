@@ -46,7 +46,8 @@ class MipsDisassembler:
     """MIPS disassembler with SGI hardware annotations."""
 
     def __init__(self, mode: str = "mips3", code_offset: int = 0,
-                 code_base: Optional[int] = None, code_size: int = 0):
+                 code_base: Optional[int] = None, code_size: int = 0,
+                 platform: Optional[str] = None):
         if not CAPSTONE_AVAILABLE:
             raise RuntimeError("Capstone library not available. Install with: pip install capstone")
 
@@ -69,6 +70,9 @@ class MipsDisassembler:
         self.code_offset = code_offset
         self.code_base = code_base
         self.code_size = code_size
+        # Platform id (e.g. "ip35") selects the platform-specific hardware
+        # annotation map; None keeps the shared/legacy map (unchanged).
+        self.platform = platform
 
     def disassemble(
         self,
@@ -200,7 +204,7 @@ class MipsDisassembler:
                         if full_addr < 0:
                             full_addr += 0x100000000  # Handle sign extension
 
-                        annotation = format_annotation(full_addr)
+                        annotation = format_annotation(full_addr, self.platform)
                         if annotation:
                             return f"; 0x{full_addr:08x} {annotation}"
                         else:
@@ -226,7 +230,7 @@ class MipsDisassembler:
                             if full_addr < 0:
                                 full_addr += 0x100000000
 
-                        annotation = format_annotation(full_addr)
+                        annotation = format_annotation(full_addr, self.platform)
                         if annotation:
                             return f"; = 0x{full_addr:08x} {annotation}"
 
@@ -344,6 +348,7 @@ def disassemble_prom(
         code_offset=code.file_offset,
         code_base=code.load_address,
         code_size=code.code_size,
+        platform=meta.platform,
     )
     lines = disasm.disassemble(data_slice, base_addr, max_instructions, annotate)
 
