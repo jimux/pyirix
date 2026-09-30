@@ -395,12 +395,28 @@ IP35_HSPEC_CONSOLE_REGISTERS = [
     RegisterDef("CHAR2", 0xA8, 4, "RW", "Console char register (secondary)"),
 ]
 
+# Additional NI offsets MEASURED as referenced in ip35prom.img (lui+ori/addiu
+# materialisation). Purposes are NOT measured, so they are labelled by offset
+# only -- no invented names.
+IP35_NI_EXTRA_REGISTERS = [
+    RegisterDef("REG_0038", 0x38, 4, "?", "NI register 0x38 (referenced in ip35prom; purpose unmeasured)"),
+    RegisterDef("REG_0050", 0x50, 4, "?", "NI register 0x50 (referenced in ip35prom; purpose unmeasured)"),
+    RegisterDef("REG_0058", 0x58, 4, "?", "NI register 0x58 (referenced in ip35prom; purpose unmeasured)"),
+    RegisterDef("REG_0090", 0x90, 4, "?", "NI register 0x90 (referenced in ip35prom; purpose unmeasured)"),
+    RegisterDef("REG_00A8", 0xA8, 4, "?", "NI register 0xA8 (referenced in ip35prom; purpose unmeasured)"),
+    RegisterDef("REG_00B0", 0xB0, 4, "?", "NI register 0xB0 (referenced in ip35prom; purpose unmeasured)"),
+    RegisterDef("REG_00B8", 0xB8, 4, "?", "NI register 0xB8 (referenced in ip35prom; purpose unmeasured)"),
+    RegisterDef("REG_00C0", 0xC0, 4, "?", "NI register 0xC0 (referenced in ip35prom; purpose unmeasured)"),
+    RegisterDef("REG_0400", 0x400, 4, "?", "NI register 0x400 (referenced in ip35prom; purpose unmeasured)"),
+    RegisterDef("REG_0420", 0x420, 4, "?", "NI register 0x420 (referenced in ip35prom; purpose unmeasured)"),
+]
+
 IP35_NI_REGISTERS = [
     RegisterDef("UNIT_SELECT", 0x20, 4, "R", "NI unit-select read (unit = value | 0x10)"),
     RegisterDef("DOORBELL", 0x190010, 4, "RW", "NI doorbell (writable + sticky)"),
     RegisterDef("CELL_8018", 0x8018, 4, "RW", "NI cell 0x8018 (memory-presence reply)"),
     RegisterDef("CELL_8058", 0x8058, 4, "RW", "NI cell 0x8058"),
-]
+] + IP35_NI_EXTRA_REGISTERS
 
 IP35_ELSC_REGISTERS = [
     RegisterDef("CH0_STATUS", 0xC000, 4, "R", "ELSC channel 0 status (PROM reads 0x01E0C000)"),
