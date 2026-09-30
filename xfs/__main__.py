@@ -103,6 +103,26 @@ def cmd_ls(args):
     return 0
 
 
+def _write_cat(data: bytes, as_text: bool = False) -> None:
+    """Emit a file's bytes to stdout.
+
+    DEFAULT is byte-exact: the bytes go straight to ``sys.stdout.buffer``. The
+    old default decoded to str and used ``sys.stdout.write``, which RE-ENCODES
+    as UTF-8 and rewrites every byte >= 0x80 (0xff -> c3 bf) -- a silent
+    corruption that inflated a guest xwd capture (1313899 -> 1314083 bytes) and
+    manufactured a false acceptance failure (found by octane). ``--text`` opts
+    into the decoded (lossy) path explicitly.
+    """
+    if as_text:
+        try:
+            text = data.decode('utf-8')
+        except UnicodeDecodeError:
+            text = data.decode('latin-1')
+        sys.stdout.write(text)
+    else:
+        sys.stdout.buffer.write(data)
+
+
 def cmd_cat(args):
     """Print file contents."""
     with open_disk_image(args.image) as f:
@@ -138,14 +158,7 @@ def cmd_cat(args):
             print(f"Error: {args.path}: {e}", file=sys.stderr)
             return 1
 
-        if args.binary:
-            sys.stdout.buffer.write(data)
-        else:
-            try:
-                text = data.decode('utf-8')
-            except UnicodeDecodeError:
-                text = data.decode('latin-1')
-            sys.stdout.write(text)
+        _write_cat(data, as_text=getattr(args, "text", False))
 
     return 0
 
@@ -430,7 +443,10 @@ def main():
     p_cat.add_argument('image', help='Disk image path')
     p_cat.add_argument('path', help='Path to file')
     p_cat.add_argument('-b', '--binary', action='store_true',
-                       help='Output raw binary')
+                       help='Output raw binary (now the DEFAULT; kept for compat)')
+    p_cat.add_argument('-t', '--text', action='store_true',
+                       help='Decode and print as text (UTF-8, latin-1 fallback); '
+                            'default is byte-exact')
 
     # extract
     p_extract = subparsers.add_parser('extract', help='Extract files')
