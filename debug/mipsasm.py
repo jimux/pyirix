@@ -56,7 +56,15 @@ def _have_local_toolchain() -> bool:
 
 def _assemble_in_container(asm_text: str, march: str, abi: str, endian: str, gval: str) -> bytes:
     """Run the resolved as+objcopy locally. Returns the raw .text bytes."""
-    with tempfile.TemporaryDirectory() as d:
+    # Host scratch: keep it under the pyirix temp tree, not bare system /tmp.
+    # mipsasm can also run standalone (its toolchain import has a bare-script
+    # fallback), so guard the import and fall back to the default temp dir.
+    try:
+        from ..tmpdir import tmp_root
+        _tmpdir = str(tmp_root())
+    except Exception:
+        _tmpdir = None
+    with tempfile.TemporaryDirectory(dir=_tmpdir) as d:
         s = os.path.join(d, "t.s")
         o = os.path.join(d, "t.o")
         b = os.path.join(d, "t.bin")
