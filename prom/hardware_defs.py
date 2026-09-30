@@ -426,7 +426,46 @@ IP35_ELSC_REGISTERS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# IP27 (SN0) Hub register widget — SN0/SN1 IO-space (64-bit) form.
+# addrs.h:143 HUB_REGISTER_WIDGET=1, addrs.h:83 SWIN_SIZE_BITS=24 => the hub
+# register window is IO_BASE|(1<<24) = 0x9200000001000000. Registers keep their
+# header absolute offsets (hubmd.h/hubio.h/hubni.h) relative to that window.
+# Sourced only: only registers the headers name appear here; anything unnamed
+# (e.g. widget+0x20) stays unannotated rather than guessed.
+# ---------------------------------------------------------------------------
+IP27_HUB_REGISTERS = [
+    RegisterDef("MD_MEMORY_CONFIG", 0x200018, 4, "RW", "hubmd.h:43 MD_MEMORY_CONFIG"),
+    RegisterDef("MD_REFRESH_CONTROL", 0x200020, 4, "RW", "hubmd.h:44 MD_REFRESH_CONTROL"),
+    RegisterDef("MD_DIR_ERROR", 0x200050, 4, "RW", "hubmd.h:50 MD_DIR_ERROR"),
+    RegisterDef("MD_MEM_DIMM_INIT", 0x200090, 4, "RW", "hubmd.h:58 MD_MEM_DIMM_INIT"),
+    RegisterDef("MD_MLAN_CTL", 0x2000a8, 4, "RW", "hubmd.h:61 MD_MLAN_CTL"),
+    RegisterDef("MD_UREG0_0", 0x220000, 4, "RW", "hubmd.h:71 MD_UREG0_0 (uController/UART 0)"),
+    RegisterDef("MD_UREG0_1", 0x220008, 4, "RW", "hubmd.h:72 MD_UREG0_1"),
+    RegisterDef("MD_UREG0_2", 0x220010, 4, "RW", "hubmd.h:73 MD_UREG0_2"),
+    RegisterDef("MD_UREG0_3", 0x220018, 4, "RW", "hubmd.h:74 MD_UREG0_3"),
+    RegisterDef("IIO_WID", 0x400000, 4, "R", "hubio.h:86 IIO_WID (widget id)"),
+    RegisterDef("IIO_WSTAT", 0x400008, 4, "R", "hubio.h:87 IIO_WSTAT"),
+    RegisterDef("IIO_WCR", 0x400020, 4, "RW", "hubio.h:88 IIO_WCR"),
+    RegisterDef("IIO_ILAPR", 0x400100, 4, "RW", "hubio.h:97 IIO_ILAPR"),
+    RegisterDef("IIO_ILCSR", 0x400128, 4, "RW", "hubio.h:102 IIO_ILCSR (LLP control/status)"),
+    RegisterDef("NI_STATUS_REV_ID", 0x600000, 4, "R", "hubni.h:27 NI_STATUS_REV_ID"),
+    RegisterDef("NI_PORT_RESET", 0x600008, 4, "W", "hubni.h:28 NI_PORT_RESET"),
+    RegisterDef("NI_PROTECTION", 0x600010, 4, "RW", "hubni.h:29 NI_PROTECTION"),
+    RegisterDef("NI_GLOBAL_PARMS", 0x600018, 4, "RW", "hubni.h:30 NI_GLOBAL_PARMS"),
+    RegisterDef("NI_IO_PROTECT", 0x600400, 4, "RW", "hubni.h:43 NI_IO_PROTECT"),
+]
+
+
 DEVICES = {
+    "HUB_IP27": DeviceDef(
+        name="Hub register widget (IP27)",
+        base_address=0x9200000001000000,   # IO_BASE | (HUB_REGISTER_WIDGET<<24)
+        size=0x800000,
+        registers=IP27_HUB_REGISTERS,
+        description="IP27/SN0 Hub registers (MD/IIO/NI blocks in the hub widget)",
+        platform="ip27",
+    ),
     # IP35-only blocks (annotate only when platform == "ip35").
     "HSPEC_IP35": DeviceDef(
         name="HSPEC console (IP35)",

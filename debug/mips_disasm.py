@@ -36,10 +36,18 @@ class DisasmLine:
 
 @dataclass
 class LuiTracker:
-    """Tracks LUI instructions for address reconstruction."""
+    """Tracks LUI instructions for address reconstruction.
+
+    ``shifted`` counts ``dsll r,r,0x10`` steps so the SN0/SN1 IO/HSPEC-space
+    form is reconstructed: ``lui L; dsll16; ori O; dsll16`` builds the 64-bit
+    address ``(L<<48)|(O<<16)`` (IO_BASE/HSPEC_BASE et al.), not a 32-bit one.
+    """
     register: str
     value: int
     address: int
+    shifted: int = 0
+    lo: int = 0
+    space: Optional[int] = None
 
 
 class MipsDisassembler:
@@ -187,15 +195,41 @@ class MipsDisassembler:
                 except ValueError:
                     pass
 
+        # SN0/SN1 IO-space form: lui L ; dsll r,r,0x10 ; ori r,r,O ; dsll r,r,0x10
+        # -> r = (L<<48)|(O<<16). Track the dsll steps on the LUI tracker so a
+        # following load/store can reconstruct the 64-bit SPACE|phys address
+        # (IO_BASE/HSPEC_BASE/...), which a 32-bit reconstruction cannot reach.
+        if mnemonic == "dsll":
+            p = op_str.replace(",", " ").split()
+            if len(p) >= 3 and p[0] == p[1] and p[2] in ("0x10", "16"):
+                tr = self.lui_values.get(p[0])
+                if tr is not None:
+                    tr.shifted += 1
+                    if tr.shifted >= 2:
+                        tr.space = (tr.value << 48) | (tr.lo << 16)
+
         # Check load/store with register offset for hardware access
         if mnemonic in ('lw', 'sw', 'lh', 'sh', 'lb', 'sb', 'ld', 'sd', 'lwu', 'lhu', 'lbu'):
             # Parse "rt, offset(rs)" format
             import re
-            match = re.match(r'(\$\w+),\s*(-?\w+)\((\$\w+)\)', op_str)
+            match = re.match(r'(\$\w+),\s*(-?\w+)?\s*\((\$\w+)\)', op_str)
             if match:
                 rt, offset_str, rs = match.groups()
                 try:
-                    offset = int(offset_str, 0)
+                    offset = int(offset_str, 0) if offset_str else 0
+
+                    # SN0/SN1 IO-space form (64-bit): base built by
+                    # lui;dsll16;ori;dsll16 -> (L<<48)|(O<<16) = SPACE|phys.
+                    if rs in self.lui_values and self.lui_values[rs].space is not None:
+                        addr = self.lui_values[rs].space + offset
+                        space = (addr >> 56) & 0xFF
+                        phys = addr & 0x00FFFFFFFFFFFFFF
+                        sname = {0x90: "HSPEC", 0x92: "IO", 0x94: "MSPEC",
+                                 0x96: "UNCAC"}.get(space)
+                        ann = (format_annotation(addr, self.platform)
+                               or format_annotation(phys, self.platform))
+                        head = f"{sname} 0x{phys:x}" if sname else f"0x{addr:x}"
+                        return f"; {head} {ann}".rstrip() if ann else f"; {head}"
 
                     # Check if we have a LUI value for this register
                     if rs in self.lui_values:
@@ -220,6 +254,11 @@ class MipsDisassembler:
                 rs = parts[1]
                 try:
                     imm = int(parts[2], 0)
+
+                    # Part of an IO-space build (lui;dsll16;ori;dsll16): capture
+                    # the low word; the following dsll completes (L<<48)|(O<<16).
+                    if rs in self.lui_values and self.lui_values[rs].shifted == 1:
+                        self.lui_values[rs].lo = imm & 0xFFFF
 
                     if rs in self.lui_values:
                         lui = self.lui_values[rs]
