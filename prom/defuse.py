@@ -163,6 +163,8 @@ def propagate_function(
     window: Tuple[int, int],
     *,
     max_inst: int = 4000,
+    gp_value: Optional[int] = None,
+    phys_base: int = 0x1FC00000,
 ) -> Tuple[List[Ref], set]:
     """Abstract-interpret one function, returning (refs, reached_addrs).
 
@@ -174,7 +176,8 @@ def propagate_function(
     reached: set = set()
     seen: set = set()
     # state[pc] = register map at entry to pc
-    state: Dict[int, Dict[int, object]] = {entry: {}}
+    _seed = {} if gp_value is None else {GP: gp_value}
+    state: Dict[int, Dict[int, object]] = {entry: dict(_seed)}
     work = [entry]
     steps = 0
     while work and steps < max_inst:
@@ -221,7 +224,15 @@ def propagate_function(
             if isinstance(base, int):
                 addr = base + _simm(w)
                 n = 8 if op == 0x37 else 4
-                off = addr - sl.va_base
+                # The image is a straight VA->file slice, but PROM data is also
+                # reached by physical / mirrored (0xc0000000_xxxxxxxx) addresses;
+                # normalize those to the slice too (phys_base + slot).
+                if (addr >> 32) == 0xC0000000:
+                    addr = addr & 0xFFFFFFFF
+                if 0x1FC00000 <= addr < 0x1FC00000 + sl.va_end - sl.va_base:
+                    off = sl.code_off + (addr - 0x1FC00000)
+                else:
+                    off = addr - sl.va_base
                 if 0 <= off and off + n <= len(sl.code):
                     fmt = (">Q" if n == 8 else ">I") if sl.big_endian else ("<Q" if n == 8 else "<I")
                     val = struct.unpack_from(fmt, sl.code, off)[0]
