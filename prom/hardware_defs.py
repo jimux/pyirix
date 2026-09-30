@@ -435,7 +435,17 @@ IP35_ELSC_REGISTERS = [
 # (e.g. widget+0x20) stays unannotated rather than guessed.
 # ---------------------------------------------------------------------------
 IP27_HUB_REGISTERS = [
+    # hubpi.h PI block (PI_BASE 0x000000): the offsets the PROM actually touches
+    # (0x0/0x20/0x28/0x50/0x58/0x90/0x98) each named from their header line.
+    RegisterDef("PI_CPU_PROTECT", 0x000000, 4, "RW", "hubpi.h:30 PI_CPU_PROTECT"),
+    RegisterDef("PI_CPU_NUM", 0x000020, 4, "R", "hubpi.h:34 PI_CPU_NUM (CPU number ID)"),
+    RegisterDef("PI_CALIAS_SIZE", 0x000028, 4, "R", "hubpi.h:35 PI_CALIAS_SIZE"),
+    RegisterDef("PI_CPU_ENABLE_A", 0x000050, 4, "RW", "hubpi.h:61 PI_CPU_ENABLE_A"),
+    RegisterDef("PI_CPU_ENABLE_B", 0x000058, 4, "RW", "hubpi.h:62 PI_CPU_ENABLE_B"),
+    RegisterDef("PI_INT_PEND_MOD", 0x000090, 4, "W", "hubpi.h:72 PI_INT_PEND_MOD (write to set pending ints)"),
+    RegisterDef("PI_INT_PEND0", 0x000098, 4, "R", "hubpi.h:73 PI_INT_PEND0 (read pending ints)"),
     RegisterDef("MD_MEMORY_CONFIG", 0x200018, 4, "RW", "hubmd.h:43 MD_MEMORY_CONFIG"),
+    RegisterDef("MD_BASE_PERF", 0x210000, 4, "RW", "hubmd.h:63 MD_PERF_SEL (perf monitor)"),
     RegisterDef("MD_REFRESH_CONTROL", 0x200020, 4, "RW", "hubmd.h:44 MD_REFRESH_CONTROL"),
     RegisterDef("MD_DIR_ERROR", 0x200050, 4, "RW", "hubmd.h:50 MD_DIR_ERROR"),
     RegisterDef("MD_MEM_DIMM_INIT", 0x200090, 4, "RW", "hubmd.h:58 MD_MEM_DIMM_INIT"),
