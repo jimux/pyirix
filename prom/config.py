@@ -336,6 +336,37 @@ PLATFORMS = {
         has_ioc=0,      # IOC3, not IOC2
         description="Origin 3000/Onyx 3000 Tezro (Bedrock, SN1 container)"
     ),
+    # --- Project-defined paravirtual platforms (NOT mainstream SGI hardware IDs). ---
+    # These are the project's own machines; the fields are sourced from the QEMU machine
+    # defs, not a guessed SGI registry row:
+    #   * ip54: the pre-virtuix paravirtual machine (obsolete IP54-era; see sgi_octane.c).
+    #   * virtuix: the IP55 paravirtual machine (hw/mips/sgi_virtuix.c: SGI_PROM_BASE
+    #     0x1fc00000, SGI_PROM_SIZE 512 KiB, big-endian, R5000 = MIPS IV per the machine).
+    # Both PROMs are plain mips-vector, 512 KiB, load at 0xbfc00000 (from the detector ledger).
+    "ip54": PlatformInfo(
+        name="IP54 (project paravirtual, pre-virtuix)",
+        ip_number="IP54",
+        typical_sizes=(524288,),  # 512KB, measured (PROM_library corpus)
+        cpu_arch="mips4",          # project paravirtual machine (R5000-class)
+        endian="big",
+        interleave=1,
+        has_mc=True,
+        has_hpc=3,
+        has_ioc=2,
+        description="Project IP54 paravirtual platform (not an SGI hardware ID)"
+    ),
+    "virtuix": PlatformInfo(
+        name="Virtuix (IP55, project paravirtual)",
+        ip_number="IP55",
+        typical_sizes=(524288,),  # 512KB = SGI_PROM_SIZE (sgi_virtuix.c)
+        cpu_arch="mips4",          # R5000 (sgi_virtuix.c: R5000 = MIPS IV)
+        endian="big",              # DEVICE_BIG_ENDIAN
+        interleave=1,
+        has_mc=True,
+        has_hpc=3,
+        has_ioc=2,
+        description="Project Virtuix IP55 paravirtual platform (not an SGI hardware ID)"
+    ),
 }
 
 
@@ -348,6 +379,11 @@ def detect_platform(filename: str) -> Optional[str]:
         "4D20_ip6prom.BE.bin" -> "ip6"
     """
     filename_lower = filename.lower()
+
+    # Project-defined paravirtual platforms (not SGI hardware IDs) -- explicit, documented
+    # extension (see the PLATFORMS entries).  'ip54' also matches the ipNN regex below.
+    if 'virtuix' in filename_lower:
+        return 'virtuix'
 
     # Try to find ipXX pattern
     import re
