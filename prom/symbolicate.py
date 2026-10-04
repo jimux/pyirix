@@ -299,3 +299,247 @@ def descriptor_table(image: bytes, profile: PromProfile, *,
             break
         out.append((DESCRIPTOR_CONST << 32) | phys)
     return out
+
+
+# ---------------------------------------------------------------------------
+# CFG/dataflow symbolication
+# ---------------------------------------------------------------------------
+
+#: Registers preserved across a call (the O32/N32 callee-saved convention).
+#: $ra (31) is deliberately EXCLUDED here -- it does not carry a data value
+#: across a call.  The linear pass's own `_CALLEE_SAVED` (which includes it) is
+#: left untouched so its measured result does not move.
+_CALLEE_SAVED_CFG = frozenset(range(16, 24)) | {28, 29, 30}
+
+
+def _branch_target(va: int, w: int) -> Optional[int]:
+    """Absolute target of a branch/jump word, or None."""
+    op = _op(w)
+    if op in (0x04, 0x05, 0x06, 0x07, 0x01, 0x14, 0x15, 0x16, 0x17):  # b/beq/bne/blez/bgtz
+        return (va + 4 + (_imm(w) << 2)) & 0xFFFFFFFFFFFFFFFF
+    if op in (0x02, 0x03):  # j/jal: PC top bits | (index << 2)
+        idx = w & 0x03FFFFFF
+        return ((va + 4) & ~0x0FFFFFFF) | (idx << 2)
+    if op == 0 and _fn(w) in (0x08, 0x09):  # jr/jalr: target is dynamic
+        return None
+    return None
+
+
+def _transfer(regval: Dict[int, int], profile, image, off_of, va, anchors,
+              seen: set) -> Dict[int, int]:
+    """Apply one instruction to the register map; record any anchor ref once."""
+    nv = dict(regval)
+    w = profile.word(image, va)
+    if w is None:
+        return nv
+    op = _op(w)
+
+    def _ref(v):
+        phys = v & 0x1FFFFFFF
+        fo = off_of + (phys - (profile.va_base & 0x1FFFFFFF))
+        if fo in anchors and (va, fo) not in seen:
+            seen.add((va, fo))
+            _REF_ACC.append(AnchorRef(va=va, function_va=0, base_value=v,
+                                      offset=0, anchor_off=fo,
+                                      anchor_text=anchors[fo]))
+
+    folded = _fold_chain_at(profile, image, va)
+    if folded is not None:
+        nv[folded[0]] = folded[1]
+        _ref(folded[1])
+        return nv
+    if op in _ADDIU_LIKE and _rs(w) in nv:
+        v = (nv[_rs(w)] + _imm(w)) & 0xFFFFFFFFFFFFFFFF
+        nv[_rt(w)] = v
+        _ref(v)
+    elif op == 0x0D and _rs(w) in nv:
+        v = nv[_rs(w)] | (w & 0xFFFF)
+        nv[_rt(w)] = v
+        _ref(v)
+    elif op == 0 and _fn(w) in (0x38, 0x3C) and _rt(w) in nv:
+        sa = _sa(w) + (32 if _fn(w) == 0x3C else 0)
+        v = (nv[_rt(w)] << sa) & 0xFFFFFFFFFFFFFFFF
+        nv[_rd(w)] = v
+        _ref(v)
+    elif op == 0 and _fn(w) in (0x20, 0x21, 0x2C, 0x2D):
+        rs, rt, rd = _rs(w), _rt(w), _rd(w)
+        if rd and rs in nv and rt in nv:
+            nv[rd] = (nv[rs] + nv[rt]) & 0xFFFFFFFFFFFFFFFF
+            _ref(nv[rd])
+        elif rd and rt == 0 and rs in nv:
+            nv[rd] = nv[rs]
+        elif rd and rs == 0 and rt in nv:
+            nv[rd] = nv[rt]
+    elif op in (0x23, 0x24, 0x20, 0x21, 0x25, 0x27, 0x37) and _rs(w) in nv:
+        v = (nv[_rs(w)] + _imm(w)) & 0xFFFFFFFFFFFFFFFF
+        _ref(v)
+        if op in (0x37, 0x23):
+            lfo = off_of + ((v & 0x1FFFFFFF) - (profile.va_base & 0x1FFFFFFF))
+            n = 8 if op == 0x37 else 4
+            if 0 <= lfo <= len(image) - n:
+                nv[_rt(w)] = int.from_bytes(image[lfo:lfo + n], "big")
+    elif op == 0x0F:  # lui: the low 16 bits are zero
+        nv[_rt(w)] = (w & 0xFFFF) << 16
+    elif op == 0x03:  # jal
+        for r in list(nv):
+            if r not in _CALLEE_SAVED_CFG:
+                del nv[r]
+    elif op == 0 and _fn(w) in (0x08, 0x09):
+        for r in list(nv):
+            if r not in _CALLEE_SAVED_CFG:
+                del nv[r]
+    return nv
+
+
+def symbolicate_cfg(
+    image: bytes,
+    profile: PromProfile,
+    anchors: Dict[int, str],
+    *,
+    max_blocks: int = 60000,
+    max_passes: int = 12,
+) -> SymbolicationResult:
+    """CFG/dataflow symbolication.
+
+    Splits the slice at branch targets and after control transfers, then runs a
+    work-list over the basic blocks, merging the register->VA map at a join by
+    **keeping only entries that agree on every incoming edge** (a value that
+    differs is dropped -- never guessed).  This carries a base through a branch
+    or a back edge that the linear pass loses at the first taken branch.
+    """
+    global _REF_ACC
+    res = SymbolicationResult()
+    vabase = profile.va_base
+    hi = vabase + profile.code_size
+    words: Dict[int, int] = {}
+    va = vabase
+    while va < hi:
+        w = profile.word(image, va)
+        if w is None:
+            break
+        words[va] = w
+        va += 4
+    if not words:
+        return res
+    lo, top = min(words), max(words)
+
+    # Leaders: the entry, every branch target, and the word after a transfer.
+    leaders = {lo}
+    for va2, w in words.items():
+        t = _branch_target(va2, w)
+        if t is not None and lo <= t <= top:
+            leaders.add(t)
+        op = _op(w)
+        if op in (0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x01, 0x14, 0x15, 0x16, 0x17) or (
+                op == 0 and _fn(w) in (0x08, 0x09)):
+            if va2 + 4 in words:
+                leaders.add(va2 + 4)
+    order = sorted(leaders)
+    block_of = {}
+    for i, st in enumerate(order):
+        end = order[i + 1] if i + 1 < len(order) else top + 4
+        assert end > st
+        for a in range(st, end, 4):
+            if a in words:
+                block_of[a] = st
+    blocks = {}
+    for st in order:
+        ins = [a for a in range(st, (order[order.index(st) + 1]
+                                      if order.index(st) + 1 < len(order)
+                                      else top + 4), 4) if a in words]
+        if ins:
+            blocks[st] = ins
+
+    entry = {}          # block start -> merged regval at block entry
+    seen: set = set()
+    _REF_ACC = res.refs
+    merges = 0
+    # Seed: the image entry AND every `jal` target.  A function reached by call
+    # does not start empty -- the caller's CALLEE-SAVED registers hold live bases
+    # across the call.  Take that context from a linear walk (the def-use pass's
+    # model) keyed by call site, so the CFG starts each function with the values
+    # the linear pass would have carried into it.  Conflicting contexts at the
+    # same target keep only the agreeing entries.
+    ctx: Dict[int, Dict[int, int]] = {}
+    lreg: Dict[int, int] = {}
+    lva = lo
+    while lva <= top:
+        lw = words.get(lva)
+        if lw is None:
+            lva += 4
+            continue
+        if _op(lw) == 0x03:
+            t = _branch_target(lva, lw)
+            if t is not None and t in blocks:
+                saved = {r: v for r, v in lreg.items() if r in _CALLEE_SAVED_CFG}
+                if t in ctx:
+                    cur = ctx[t]
+                    ctx[t] = {r: v for r, v in cur.items()
+                              if r in saved and saved[r] == v}
+                else:
+                    ctx[t] = saved
+            for r in list(lreg):
+                if r not in _CALLEE_SAVED_CFG:
+                    del lreg[r]
+        else:
+            lreg = _transfer(lreg, profile, image, profile.code_off, lva,
+                             anchors, set())
+        lva += 4
+    seeds = {lo}
+    for ava, aw in words.items():
+        if _op(aw) == 0x03:
+            t = _branch_target(ava, aw)
+            if t is not None and t in blocks:
+                seeds.add(t)
+    for st in seeds:
+        entry[st] = dict(ctx.get(st, {}))
+    for _ in range(max_passes):
+        changed = False
+        for st in order:
+            ins = blocks.get(st)
+            if not ins:
+                continue
+            if st in entry:
+                regval = dict(entry[st])
+            else:
+                regval = dict(entry.get(st, {}))
+                if st not in entry:
+                    continue
+            for a in ins:
+                regval = _transfer(regval, profile, image, profile.code_off,
+                                   a, anchors, seen)
+            last = ins[-1]
+            lw = words[last]
+            succ = []
+            if _op(lw) in (0x02, 0x03):
+                succ = []
+            elif _op(lw) in (0x04, 0x05, 0x06, 0x07, 0x01, 0x14, 0x15, 0x16, 0x17):
+                for cand in (_branch_target(last, lw), last + 4):
+                    if cand is not None and cand in blocks:
+                        succ.append(cand)
+            elif _op(lw) == 0 and _fn(lw) in (0x08, 0x09):
+                succ = []
+            else:
+                if last + 4 in blocks:
+                    succ.append(last + 4)
+            for s in succ:
+                if s not in entry:
+                    entry[s] = dict(regval)
+                    changed = True
+                    merges += 1
+                else:
+                    cur = entry[s]
+                    new = {r: v for r, v in cur.items()
+                           if r in regval and regval[r] == v}
+                    if len(new) != len(cur):
+                        entry[s] = new
+                        changed = True
+                        merges += 1
+        if not changed:
+            break
+    res.scanned = len(words)
+    res.unresolved_bases = merges
+    return res
+
+
+_REF_ACC: List[AnchorRef] = []
