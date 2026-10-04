@@ -311,6 +311,11 @@ def descriptor_table(image: bytes, profile: PromProfile, *,
 #: left untouched so its measured result does not move.
 _CALLEE_SAVED_CFG = frozenset(range(16, 24)) | {28, 29, 30}
 
+#: The O32/N32 argument registers ($a0-$a3): a value in one of these at a `jal`
+#: IS the callee's incoming argument, so seeding a function with them carries a
+#: base that is *passed* to it rather than built inside it.
+_ARG_REGS = frozenset(range(4, 8))
+
 
 def _branch_target(va: int, w: int) -> Optional[int]:
     """Absolute target of a branch/jump word, or None."""
@@ -471,7 +476,8 @@ def symbolicate_cfg(
         if _op(lw) == 0x03:
             t = _branch_target(lva, lw)
             if t is not None and t in blocks:
-                saved = {r: v for r, v in lreg.items() if r in _CALLEE_SAVED_CFG}
+                saved = {r: v for r, v in lreg.items()
+                         if r in _CALLEE_SAVED_CFG or r in _ARG_REGS}
                 if t in ctx:
                     cur = ctx[t]
                     ctx[t] = {r: v for r, v in cur.items()
