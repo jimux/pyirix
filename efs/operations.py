@@ -640,6 +640,31 @@ def create_file(f, part_offset, sb, path, data, mode=0o100644, uid=0, gid=0):
     return new_ino
 
 
+def set_attrs(f, part_offset, sb, path, mode=None, uid=None, gid=None):
+    """Change the permission bits (`mode`, the low 12 bits only: the file
+    type bits are kept), owner and/or group of an existing inode, in place.
+    Nothing but those inode fields is touched (no extent, size, bitmap or
+    superblock write).  Raises EFSPathError if `path` does not exist.
+    Returns the inode number."""
+    ino = resolve_path(f, part_offset, sb, path)
+    if ino is None:
+        raise EFSPathError("no such path: %s" % path)
+    bb = inode_to_bb(sb, ino)
+    pos = part_offset + bb * EFS_BLOCK_SIZE + (ino & 0x3) * EFS_INODE_SIZE
+    f.seek(pos)
+    buf = bytearray(f.read(EFS_INODE_SIZE))
+    if mode is not None:
+        old = struct.unpack_from('>H', buf, 0)[0]
+        struct.pack_into('>H', buf, 0, (old & 0o170000) | (mode & 0o7777))
+    if uid is not None:
+        struct.pack_into('>H', buf, 4, uid)
+    if gid is not None:
+        struct.pack_into('>H', buf, 6, gid)
+    f.seek(pos)
+    f.write(bytes(buf))
+    return ino
+
+
 def write_file(f, part_offset, sb, path, data):
     """Overwrite an existing regular file's contents in place: frees its
     old data blocks (and any indirect-table blocks) back to the bitmap,
