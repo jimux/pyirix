@@ -160,11 +160,12 @@ def main(argv=None) -> int:
     imp.add_argument("--dest", default=None, help="data root (override)")
     imp.add_argument("--no-poststeps", action="store_true",
                      help="skip mkfontdir/mkfontscale font post-step")
+    # The category list is read from the manifest: a hand-written copy had
+    # already lost toolchest-config, and would have hidden every later entry.
+    from pyirix.indigo.manifest import MANIFEST
     imp.add_argument("--only", action="append", metavar="CATEGORY",
                      help="import ONLY this asset category (repeatable): "
-                          "schemes, fonts, filetype, iconcatalog, "
-                          "app-defaults, rgb-colors, sounds, savers, "
-                          "backgrounds, background-bitmaps, granite-bitmap. "
+                          + ", ".join(e.name for e in MANIFEST) + ". "
                           "Use to layer ONE category from a later-revision "
                           "source over an existing root")
     imp.set_defaults(func=_cmd_import)
