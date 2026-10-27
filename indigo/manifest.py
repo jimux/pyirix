@@ -162,6 +162,22 @@ MANIFEST: tuple[ManifestEntry, ...] = (
              "...) — deliberately NOT imported by prefixing the whole "
              "bitmaps/ dir, so this is its own single-file entry.",
     ),
+    ManifestEntry(
+        name="sysmgr-docs",
+        prefix="var/www/htdocs/sysmgr",
+        products=("sysadmdesktop.sw.sysadm",),
+        min_count=10, count_kind="files", required=False,
+        note="the System Manager's own pages (TOC.html, Overview.html, "
+             "per-category .html/.gif; 17 files under C/ on 6.5.5). sysmgr "
+             "reads <docsroot>/<locale>/ at startup and posts its fatal "
+             "docs-missing dialog without them; on IRIX they come with the "
+             "default sysadmdesktop install, so a stock machine opens the "
+             "window.  The FIRST var/ entry here: everything else is under "
+             "usr/.  The port's pathmap already routes /var/www/htdocs/sysmgr "
+             "to the data root.  NOT var/www/cgi-bin/sysmgr: its one file "
+             "(`search`) is a MIPS N32 CGI behind a web server the port has "
+             "no counterpart for.",
+    ),
 )
 
 
