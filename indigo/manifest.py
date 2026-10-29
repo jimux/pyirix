@@ -178,6 +178,31 @@ MANIFEST: tuple[ManifestEntry, ...] = (
              "(`search`) is a MIPS N32 CGI behind a web server the port has "
              "no counterpart for.",
     ),
+    ManifestEntry(
+        name="images",
+        prefix="usr/lib/images",
+        products=("desktop_eoe.sw.envm", "desktop_eoe.sw.toolchest"),
+        min_count=10, count_kind="files", required=False,
+        note="the desktop's ICON IMAGES: SGI .icon files (Fm.icon, default.icon ...) "
+             "and their relative symlinks (FileManager.icon -> Fm.icon; 65 of 185 "
+             "entries on 6.5.5).  4Dwm and fm look an app's iconified image up "
+             "here (the port's pathmap WATCHES /usr/lib/images and answers it from "
+             "the data root); without the tree every app iconified to 4Dwm's "
+             "generic glyph (64bit-fidelity 2026-10-29: the LP64 ISO's data root "
+             "had no usr/lib/images at all).  Symlinks are kept as links.",
+    ),
+    ManifestEntry(
+        name="x11-bitmaps",
+        prefix="usr/include/X11/bitmaps",
+        products=("x_eoe.sw.eoe", "desktop_eoe.sw.envm"),
+        min_count=10, count_kind="files", required=False,
+        note="the WHOLE X11 bitmaps tree (~150 entries on 6.5.5); the port's pathmap "
+             "watches /usr/include/X11/bitmaps.  Before 2026-10-29 only its "
+             "sgidesktop/ subdirectory (background-bitmaps) and the granite file "
+             "(granite-bitmap) were imported, ~48 entries; the rest -- the bitmaps "
+             "app-defaults and desktop tools name by absolute path -- were missing.  "
+             "Overlaps those two entries by design (same files, a parent prefix).",
+    ),
 )
 
 
