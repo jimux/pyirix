@@ -238,6 +238,27 @@ MANIFEST: tuple[ManifestEntry, ...] = (
         min_count=1, count_kind="files", required=False,
         note="Process Manager (sysadm runcatalog SaProcessCatalog.cdf, ported at LP64 by 64bit-corpus 41e78aad) reads it; measured by strace of opens (board #25875).  A SINGLE-FILE entry on purpose: the other sysadm catalogs still crash with their data present and must keep exiting Unable to launch, so no /usr/sysadm, /var/sysadm or /etc/config PREFIX is imported.",
     ),
+    ManifestEntry(
+        name="sysadm-filesystem-catalog",
+        prefix="usr/sysadm/catalogdf/SaFilesystemCatalog.cdf",
+        products=(),                # owning inst product not verified here
+        min_count=1, count_kind="files", required=False,
+        note="Filesystem Manager (sysadm runcatalog SaFilesystemCatalog.cdf, ported at LP64 by 64bit-corpus 3d5f53ea) reads it; measured by strace of opens (board #25889).  A SINGLE-FILE entry: System Alerts (syserrpanel) and the other catalogs still crash with their data present and stay held.",
+    ),
+    ManifestEntry(
+        name="sysadm-filesystem-listalldiskfs-default",
+        prefix="var/sysadm/defaultPrivileges/listAllDiskFS",
+        products=(),                # owning inst product not verified here
+        min_count=1, count_kind="files", required=False,
+        note="Filesystem Manager (sysadm runcatalog SaFilesystemCatalog.cdf, ported at LP64 by 64bit-corpus 3d5f53ea) reads it; measured by strace of opens (board #25889).  A SINGLE-FILE entry: System Alerts (syserrpanel) and the other catalogs still crash with their data present and stay held.",
+    ),
+    ManifestEntry(
+        name="sysadm-removablemedia-catalog",
+        prefix="usr/sysadm/catalogdf/SaRemovableMediaCatalog.cdf",
+        products=(),                # owning inst product not verified here
+        min_count=1, count_kind="files", required=False,
+        note="Eject Media (sysadm runcatalog SaRemovableMediaCatalog.cdf, ported at LP64 by 64bit-corpus 3d5f53ea) reads it; measured by strace of opens (board #25889).  A SINGLE-FILE entry: System Alerts (syserrpanel) and the other catalogs still crash with their data present and stay held.",
+    ),
 )
 
 
