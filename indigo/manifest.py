@@ -203,6 +203,41 @@ MANIFEST: tuple[ManifestEntry, ...] = (
              "app-defaults and desktop tools name by absolute path -- were missing.  "
              "Overlaps those two entries by design (same files, a parent prefix).",
     ),
+    ManifestEntry(
+        name="sysadm-process-catalog",
+        prefix="usr/sysadm/catalogdf/SaProcessCatalog.cdf",
+        products=(),                # owning inst product not verified here
+        min_count=1, count_kind="files", required=False,
+        note="Process Manager (sysadm runcatalog SaProcessCatalog.cdf, ported at LP64 by 64bit-corpus 41e78aad) reads it; measured by strace of opens (board #25875).  A SINGLE-FILE entry on purpose: the other sysadm catalogs still crash with their data present and must keep exiting Unable to launch, so no /usr/sysadm, /var/sysadm or /etc/config PREFIX is imported.",
+    ),
+    ManifestEntry(
+        name="sysadm-process-listproc-default",
+        prefix="var/sysadm/defaultPrivileges/listProc",
+        products=(),                # owning inst product not verified here
+        min_count=1, count_kind="files", required=False,
+        note="Process Manager (sysadm runcatalog SaProcessCatalog.cdf, ported at LP64 by 64bit-corpus 41e78aad) reads it; measured by strace of opens (board #25875).  A SINGLE-FILE entry on purpose: the other sysadm catalogs still crash with their data present and must keep exiting Unable to launch, so no /usr/sysadm, /var/sysadm or /etc/config PREFIX is imported.",
+    ),
+    ManifestEntry(
+        name="sysadm-privenviron",
+        prefix="var/sysadm/privenviron",
+        products=(),                # owning inst product not verified here
+        min_count=1, count_kind="files", required=False,
+        note="Process Manager (sysadm runcatalog SaProcessCatalog.cdf, ported at LP64 by 64bit-corpus 41e78aad) reads it; measured by strace of opens (board #25875).  A SINGLE-FILE entry on purpose: the other sysadm catalogs still crash with their data present and must keep exiting Unable to launch, so no /usr/sysadm, /var/sysadm or /etc/config PREFIX is imported.",
+    ),
+    ManifestEntry(
+        name="sysadm-useraccounts-config",
+        prefix="var/sysadm/config/useraccounts.config",
+        products=(),                # owning inst product not verified here
+        min_count=1, count_kind="files", required=False,
+        note="Process Manager (sysadm runcatalog SaProcessCatalog.cdf, ported at LP64 by 64bit-corpus 41e78aad) reads it; measured by strace of opens (board #25875).  A SINGLE-FILE entry on purpose: the other sysadm catalogs still crash with their data present and must keep exiting Unable to launch, so no /usr/sysadm, /var/sysadm or /etc/config PREFIX is imported.",
+    ),
+    ManifestEntry(
+        name="sysadm-privileges-flag",
+        prefix="etc/config/privileges",
+        products=(),                # owning inst product not verified here
+        min_count=1, count_kind="files", required=False,
+        note="Process Manager (sysadm runcatalog SaProcessCatalog.cdf, ported at LP64 by 64bit-corpus 41e78aad) reads it; measured by strace of opens (board #25875).  A SINGLE-FILE entry on purpose: the other sysadm catalogs still crash with their data present and must keep exiting Unable to launch, so no /usr/sysadm, /var/sysadm or /etc/config PREFIX is imported.",
+    ),
 )
 
 
