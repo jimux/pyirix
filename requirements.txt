@@ -1,2 +1,11 @@
-# pyirix — no runtime dependencies (stdlib only)
-# Install dev dependencies with: pip install -e ".[dev]"
+# pyirix — SGI/IRIX format analysis (EFS, dist, ELF, debug)
+#
+# NOTE: the authoritative workspace-wide list is ../requirements.txt. This file
+# is pyirix's own subset; a node install should use ../requirements.txt.
+#
+# `pyelftools` is pyirix's own dependency (pyirix/elf/deps.py,
+# pyirix/debug/modules.py) and was UNDECLARED here until 2026-11-11 — the code
+# imported it, no requirements file listed it, and it existed on the dev host
+# only because it had been pip-installed ad hoc.
+
+pyelftools
