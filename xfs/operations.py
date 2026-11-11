@@ -227,7 +227,16 @@ def list_dir(f, part_offset, sb, path='/'):
             'name': name,
             'ino': child_ino,
             'type': _type_char(ft),
-            'mode': child['di_mode'] & 0o7777,
+            # FULL di_mode, file-type bits included -- matching read_inode()
+            # in this same module and pyirix.efs.read_inode().  This used to
+            # mask to 0o7777, which made `mode` mean different things in the
+            # two filesystem readers: a caller that tested S_ISREG() on it got
+            # False for every XFS entry and silently examined nothing (a gate
+            # built on it reported clean on a golden with 26 of 44 demos
+            # non-executable).  `type` is unchanged, so listings that use it
+            # are unaffected; _format_perms only reads the low 12 bits, so the
+            # `ls` rendering is identical.
+            'mode': child['di_mode'],
             'uid': child['di_uid'],
             'gid': child['di_gid'],
             'size': child['di_size'],
