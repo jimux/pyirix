@@ -1022,10 +1022,18 @@ def _estimate_efs_blocks(files, symlinks, dirs):
 
 
 def mkfs_efs(output_path, files=None, symlinks=None, dirs=None,
-             size_blocks=None, with_volume_header=True, quiet=True):
+             size_blocks=None, with_volume_header=True, quiet=True,
+             modes=None):
     """Create an SGI EFS filesystem image from scratch.
 
     files     : dict {path: bytes}        — regular files (parents auto-created)
+    modes     : dict {path: mode}         — per-file permissions, optional.  A
+                staged EXECUTABLE that is not executable mounts fine and then
+                fails at run time, which reads as a caller's result rather than
+                as a staging defect; without this the caller has to rebuild the
+                image by hand to get the bits right.  Values are the usual
+                permission bits (0o755); the file type is OR'd in here so a
+                caller cannot accidentally ask for a non-regular file.
     symlinks  : dict {path: target_str}   — symbolic links
     dirs      : iterable of paths         — explicit (possibly empty) directories
     size_blocks   : total EFS basic blocks; auto-sized if None
@@ -1044,7 +1052,11 @@ def mkfs_efs(output_path, files=None, symlinks=None, dirs=None,
     for p in dirs:
         b.add_directory(p)
     for p, data in files.items():
-        b.add_file(p, data)
+        _m = (modes or {}).get(p)
+        if _m is None:
+            b.add_file(p, data)
+        else:
+            b.add_file(p, data, mode=(_m & 0o7777) | 0o100000)
     for p, target in symlinks.items():
         b.add_symlink(p, target)
 
