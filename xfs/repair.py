@@ -20,7 +20,7 @@ from pyirix.xfs.ondisk import parse_superblock
 from pyirix.xfs.superblock import read_superblock, write_superblock, sash_compatible, zero_log
 from pyirix.xfs.alloc import read_agf
 from pyirix.xfs.ialloc import read_agi
-from pyirix.xfs.inode import read_inode
+from pyirix.xfs.inode import read_inode, get_extents
 
 
 class Finding:
@@ -137,7 +137,178 @@ def check_xfs(f, part_offset):
     else:
         r.add('INFO', 'log', "no internal log (external or none)")
 
+    _check_directory_tree(f, part_offset, sb, r)
+
     return r
+
+
+# ── Directory traversal ─────────────────────────────────────────────
+# check_xfs validated the superblock, geometry, AG headers, the root inode's
+# TYPE and the log -- and never read a single directory block. A directory that
+# is corrupt, a directory that is merely full, and a directory that is healthy
+# all produced the same six PASS lines.
+#
+# That matters because the writer cannot grow a dir2 BLOCK into a LEAF
+# (sf_to_dir2_block exists; block->leaf does not), so a directory with enough
+# entries simply stops accepting them. Without traversal, a checker cannot tell
+# an operator which of the three states they are in.
+
+DIR_CHECK_MAX_DIRS = 20000        # bound: a full walk of a 4 GiB fs is seconds,
+                                  # but say so rather than walking forever
+
+
+def _dir_block_magics_bad(f, part_offset, sb, inode):
+    """A description of the FIRST block whose header magic is unrecognised, or ''.
+
+    The three legitimate layouts, and where each keeps its magic:
+      V1 leaf        magic 0xFEEB at byte 8   (the IRIX-XFS leaf block)
+      dir2 block     magic 'XD2B' at byte 0
+      dir2 data      magic 'XD2D' at byte 0
+    Anything else is a header read_dir_entries() would silently skip.
+    """
+    from pyirix.xfs.constants import (XFS_DIR_LEAF_MAGIC, XFS_DIR2_BLOCK_MAGIC,
+                                      XFS_DIR2_DATA_MAGIC, XFS_DA_NODE_MAGIC)
+    from pyirix.xfs.ondisk import fsblock_to_offset
+    try:
+        extents = get_extents(f, part_offset, sb, inode)
+    except Exception as e:
+        return "extents unreadable: %s" % e
+    if not extents:
+        return "no extents"
+    blocksize = sb['sb_blocksize']
+    for _startoff, startblock, blockcount in extents:
+        for blk in range(blockcount):
+            f.seek(fsblock_to_offset(sb, part_offset, startblock + blk))
+            head = f.read(16)
+            if len(head) < 16:
+                return "short block at fsblock %d" % (startblock + blk)
+            m4 = struct.unpack('>I', head[0:4])[0]
+            m2 = struct.unpack('>H', head[8:10])[0]
+            if m2 in (XFS_DIR_LEAF_MAGIC, XFS_DA_NODE_MAGIC):
+                # 0xFEEB V1-leaf entry block · 0xFEBE DA B+tree INTERNAL node.
+                # The node is an index, not an entry block; read_dir_entries
+                # refuses it by design, so its presence is not a fault.
+                continue
+            if m4 in (XFS_DIR2_BLOCK_MAGIC, XFS_DIR2_DATA_MAGIC):
+                continue
+            return ("fsblock %d: magic4=0x%08x magic2=0x%04x"
+                    % (startblock + blk, m4, m2))
+    return ""
+
+
+def _check_directory_tree(f, part_offset, sb, r):
+    """Walk every directory and report structural faults it can SEE.
+
+    Adds ONE summary finding plus a finding per fault class -- not one per
+    directory, because a healthy filesystem has thousands of directories and a
+    checker that emits a line each is unreadable.
+
+    What it detects, and what it deliberately does not:
+      * a directory whose inode cannot be read, or is not a directory;
+      * a directory whose entries cannot be parsed at all (the block magic is
+        neither XFS_DIR2_BLOCK_MAGIC nor a DA node);
+      * an entry whose child inode does not exist -- the silent skip that
+        list_dir() performs and that would otherwise hide a hole;
+      * a directory at its block-capacity ceiling (the measured ~120 long-name
+        case) -- reported as INFO, because it is a LIMIT not a fault.
+
+    It does NOT verify bestfree/bestfree offsets or free-space accounting:
+    those require the dir2 data-header semantics that the last wrong reading in
+    this area got wrong (a bestfree offset read as a magic). A check that
+    guesses at a structure it does not parse is worse than no check.
+    """
+    from pyirix.xfs.directory import read_dir_entries, read_dir_sf
+    from pyirix.xfs.constants import (XFS_DINODE_FMT_BTREE, XFS_DINODE_FMT_EXTENTS,
+                                      XFS_DINODE_FMT_LOCAL)
+
+    root = sb['sb_rootino']
+    seen = set()
+    stack = [(root, '/')]
+    dirs = files = 0
+    unreadable_dirs, unparsable_dirs, holes, bad_headers = [], [], [], []
+    full_dirs = 0
+
+    while stack:
+        ino, path = stack.pop()
+        if ino in seen or dirs >= DIR_CHECK_MAX_DIRS:
+            continue
+        seen.add(ino)
+        try:
+            inode = read_inode(f, part_offset, sb, ino)
+        except Exception as e:
+            unreadable_dirs.append((path, "%s: %s" % (type(e).__name__, e)))
+            continue
+        if inode is None:
+            unreadable_dirs.append((path, "inode unreadable"))
+            continue
+        if (inode['di_mode'] & 0o170000) != 0o040000:
+            continue
+        dirs += 1
+        try:
+            entries = read_dir_entries(f, part_offset, sb, inode)
+        except Exception as e:
+            unparsable_dirs.append((path, "%s: %s" % (type(e).__name__, e)))
+            continue
+        # HEADER VALIDATION, per format. read_dir_entries() SKIPS a block it does
+        # not recognise (directory.py: `continue` on an unknown magic), so a
+        # corrupted header yields an EMPTY entry list and looks like an empty
+        # directory. That is the silent hole this check exists to close, so the
+        # magic must be tested HERE rather than inferred from the parse result.
+        if inode['di_format'] in (XFS_DINODE_FMT_EXTENTS, XFS_DINODE_FMT_BTREE):
+            bad = _dir_block_magics_bad(f, part_offset, sb, inode)
+            if bad:
+                bad_headers.append((path, bad))
+                continue
+        # A grown directory whose single block is at capacity is a LIMIT, and it
+        # is the state that makes create_file refuse. Surface it as INFO once.
+        if inode['di_format'] in (XFS_DINODE_FMT_EXTENTS, XFS_DINODE_FMT_BTREE):
+            try:
+                if inode['di_size'] and inode['di_size'] <= sb['sb_blocksize']:
+                    full_dirs += 1
+            except Exception:
+                pass
+        for name, child_ino in entries:
+            files += 1
+            try:
+                child = read_inode(f, part_offset, sb, child_ino)
+            except Exception:
+                child = None
+            if child is None:
+                # list_dir() skips these silently; count them instead.
+                holes.append((path, name, child_ino))
+                continue
+            if (child['di_mode'] & 0o170000) == 0o040000:
+                stack.append((child_ino, path.rstrip('/') + '/' + name))
+
+    if unreadable_dirs:
+        r.add('FAIL', 'dir_inode',
+              "%d director%s unreadable (first: %s: %s)"
+              % (len(unreadable_dirs), 'y' if len(unreadable_dirs) == 1 else 'ies',
+                 unreadable_dirs[0][0], unreadable_dirs[0][1]))
+    if unparsable_dirs:
+        r.add('FAIL', 'dir_entries',
+              "%d director%s whose entries cannot be parsed (first: %s: %s)"
+              % (len(unparsable_dirs), 'y' if len(unparsable_dirs) == 1 else 'ies',
+                 unparsable_dirs[0][0], unparsable_dirs[0][1]))
+    if bad_headers:
+        r.add('FAIL', 'dir_block_magic',
+              "%d director%s with a block header that is neither a V1 leaf (0xFEEB) "
+              "nor dir2 (XD2B/XD2D) (first: %s: %s)"
+              % (len(bad_headers), 'y' if len(bad_headers) == 1 else 'ies',
+                 bad_headers[0][0], bad_headers[0][1]))
+    if holes:
+        r.add('FAIL', 'dir_entry_ino',
+              "%d director%s entr%s pointing at an unreadable inode (first: %s/%s -> %s)"
+              % (len(holes), 'y' if len(holes) == 1 else 'ies',
+                 'y' if len(holes) == 1 else 'ies',
+                 holes[0][0], holes[0][1], holes[0][2]))
+    level = 'FAIL' if (unreadable_dirs or unparsable_dirs or holes or bad_headers) else 'PASS'
+    r.add(level, 'dir_tree',
+          "%d director%s, %d entr%s traversed%s"
+          % (dirs, 'y' if dirs == 1 else 'ies', files, 'y' if files == 1 else 'ies',
+             "" if not full_dirs else
+             "; %d at single-block capacity (new entries will be refused)"
+             % full_dirs))
 
 
 def find_secondary_superblock(f, part_offset, max_scan_bytes=64 * 1024 * 1024):
