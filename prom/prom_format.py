@@ -198,7 +198,19 @@ def is_mips_vector(data: bytes) -> bool:
     # structured 3-word-record table, not MIPS code — dropping 0x01 refuses it
     # and affects no real PROM (measured: REGIMM is the only opcode used by
     # exactly that one file among 49 mips-vector images).
-    if (_word(data, 0) >> 26) & 0x3F in valid:
+    w0 = _word(data, 0)
+    if (w0 >> 26) & 0x3F in valid:
+        # A reset vector that is a JUMP must jump into PROM space. A `J` opcode
+        # alone is satisfied by ordinary data constants: three Professional IRIS
+        # 070-0093 DATA ROMs have word0 0x0b000b00 -- opcode 2 (J), target
+        # 0x0c002c00, which is outside their own 64 KiB image, and the same word
+        # repeats 8 of the first 8 words. Measured across the library: this arm
+        # selects exactly those 3 files and no real PROM (the 32 genuine J
+        # vectors all land in 0x9FC00000.. or 0xBFC00000..). The other opcodes
+        # in `valid` -- BEQ (IP54) and COP0 cache-init (IP26) -- carry no
+        # absolute target and are unaffected by this test.
+        if (w0 >> 26) & 0x3F == 0x02:
+            return _jump_into_prom(w0)
         return True
     if _word(data, 0) == 0 and ((_word(data, 4) >> 26) & 0x3F) in valid:
         return True
