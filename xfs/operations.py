@@ -113,7 +113,31 @@ def resolve_path_follow_links(f, part_offset, sb, path,
             # Absolute target → reset to root; relative → splice in at
             # current position. Either way the remaining path parts
             # after `parts[i:]` (including `part` itself) are unchanged.
-            new_parts = [p for p in target.split('/') if p]
+            # NORMALISE '.' AND '..' BEFORE SPLICING. `if p` drops empty
+            # components (correct) but keeps '..' as a LITERAL component, so a
+            # relative target like '../var/tmp' made the walk look for a
+            # directory literally named '..' and return None -- indistinguishable
+            # from "does not exist". Measured 2026-11-15: /usr/tmp -> ../var/tmp
+            # and /var/arch/lib32/libGLcore.so -> ../../../usr/gfx/... both
+            # returned None, while every ABSOLUTE target resolved. IRIX uses
+            # relative links heavily, so this silently hid files that ARE present.
+            # `..` INSIDE a symlink target is relative to the LINK'S PARENT,
+            # and the link's own name is not part of that parent. So the
+            # accumulator starts at parts[:i] (the parent) and parts[i] (the
+            # link's name) is DROPPED -- it is replaced by the target. My first
+            # attempt kept parts[:i] but then spliced the link name back in via
+            # parts[i:], yielding /usr/var/tmp instead of /var/tmp.
+            _abs = target.startswith('/')
+            _acc = [] if _abs else list(parts[:i])
+            for _c in target.split('/'):
+                if not _c or _c == '.':
+                    continue
+                if _c == '..':
+                    if _acc:
+                        _acc.pop()
+                    continue
+                _acc.append(_c)
+            new_parts = _acc if not _abs else _acc
             if target.startswith('/'):
                 current_ino = root_ino
                 parts = new_parts + parts[i:]
@@ -169,10 +193,25 @@ def resolve_path_follow_links(f, part_offset, sb, path,
                     f, part_offset, sb, target,
                     max_resolutions=max_resolutions - visited)
             # Relative final-component symlink: anchor at the link's
-            # parent directory.
+            # parent directory, then NORMALISE the joined path.
+            #
+            # THE BUG THIS FIXES: `parent_path + '/' + target` yields e.g.
+            # `/usr/../var/tmp`, and the recursive call's descend loop matches
+            # LITERAL entry names -- so it looks for a directory named `..` in
+            # /usr and returns None. Measured 2026-11-15 on /usr/tmp -> ../var/tmp
+            # and /var/arch/lib32/libGLcore.so -> ../../../usr/gfx/...: both were
+            # reported absent while the files exist (IRIX uses relative links
+            # heavily, so this silently hid present files).
+            #
+            # Normalising HERE is the fix, because this is the only place that
+            # knows both the anchor and the target. `os.path.normpath` is safe on
+            # POSIX paths and does not touch the filesystem.
             parent_path = '/' + '/'.join(parts[:-1])
+            import os as _os
+            _joined = _os.path.normpath(_os.path.join(
+                parent_path, target))
             return resolve_path_follow_links(
-                f, part_offset, sb, parent_path + '/' + target,
+                f, part_offset, sb, _joined,
                 max_resolutions=max_resolutions - visited)
     return current_ino
 
