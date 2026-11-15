@@ -1516,8 +1516,16 @@ def v1_leaf_to_node(f, part_offset, sb, inode, ino, alloc_fn, max_pairs=2):
         blk[19] = 0                                    # pad
         return blk
 
-    leaf0 = _build_leaf(halves[0], forw=leaf_fs[1], back=0)
-    leaf1 = _build_leaf(halves[1], forw=0, back=leaf_fs[0])
+    # THE LEAVES MUST NOT BE LINKED. xfs_da_btree.c:808 -- when the root is a
+    # NODE at level 1, the kernel checks each child and requires
+    #     ASSERT(blkinfo->forw == 0);
+    #     ASSERT(blkinfo->back == 0);
+    # I copied xfs_dir_leaf_split's xfs_da_blk_link step and chained the leaves,
+    # which is the shape for leaves joined in a tree; a SHALLOW ROOT requires its
+    # children UNLINKED. Non-debug IRIX validates rather than ASSERTs and returns
+    # EFSCORRUPTED -- the guest's exact message, with 0 of 160 files visible.
+    leaf0 = _build_leaf(halves[0], forw=0, back=0)
+    leaf1 = _build_leaf(halves[1], forw=0, back=0)
     for fsb, blk in ((leaf_fs[0], leaf0), (leaf_fs[1], leaf1)):
         f.seek(fsblock_to_offset(sb, part_offset, fsb))
         f.write(bytes(blk))
