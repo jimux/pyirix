@@ -163,6 +163,39 @@ def _read_dir_sf_parent_v2(data):
         return struct.unpack('>I', data[2:6])[0]
 
 
+def _parse_dir_da_node(f, part_offset, sb, block_data, entries):
+    """Read a V1 DA B+tree node and recurse into the leaf blocks it names.
+
+    Layout (kern/fs/xfs/xfs_da_btree.h):
+      xfs_da_blkinfo_t  forw(4) back(4) magic(2) pad(2)      = 16
+      count(2) level(2)                                      = 20
+      then `count` x { hashval(4), before(4) }               = 8 each
+    `before` is the fsblock of the child that precedes that key.
+    """
+    blocksize = sb['sb_blocksize']
+    count = struct.unpack('>H', block_data[12:14])[0]
+    if count <= 0 or count > 512:
+        return
+    off = 16
+    for _i in range(count):
+        if off + 8 > len(block_data):
+            return
+        _hashval = struct.unpack('>I', block_data[off:off + 4])[0]
+        child_fs = struct.unpack('>I', block_data[off + 4:off + 8])[0]
+        off += 8
+        f.seek(fsblock_to_offset(sb, part_offset, child_fs))
+        child = f.read(blocksize)
+        if len(child) < XFS_DIR_LEAF_HDR_SIZE:
+            continue
+        m2 = struct.unpack('>H', child[8:10])[0]
+        if m2 == XFS_DIR_LEAF_MAGIC:
+            _parse_dir_v1_leaf(child, entries)
+        elif m2 == XFS_DA_NODE_MAGIC:
+            # one more level than this writer creates, but a real filesystem
+            # can have it; recurse rather than silently losing entries.
+            _parse_dir_da_node(f, part_offset, sb, child, entries)
+
+
 def _read_dir_block(f, part_offset, sb, inode):
     """Read block/data format directory entries."""
     blocksize = sb['sb_blocksize']
@@ -187,6 +220,16 @@ def _read_dir_block(f, part_offset, sb, inode):
 
             if magic2 == XFS_DIR_LEAF_MAGIC:
                 _parse_dir_v1_leaf(block_data, entries)
+                continue
+
+            # A DA B+tree NODE is an INDEX, not an entry block: it names the
+            # leaf blocks below it in its `before` fields. Without this branch a
+            # directory that grew past one leaf reads as EMPTY -- measured:
+            # split a 118-entry leaf into two + node and read_dir_entries
+            # returned 0. Follow the children, one level (the only depth this
+            # writer creates).
+            if magic2 == XFS_DA_NODE_MAGIC:
+                _parse_dir_da_node(f, part_offset, sb, block_data, entries)
                 continue
 
             if magic4 not in (XFS_DIR2_BLOCK_MAGIC, XFS_DIR2_DATA_MAGIC):
@@ -1345,3 +1388,137 @@ def sf_to_dir2_block(f, part_offset, sb, inode, ino, parent_ino, alloc_fn):
     inode['di_size'] = dirblksize
 
     return True
+
+def v1_leaf_to_node(f, part_offset, sb, inode, ino, alloc_fn, max_pairs=2):
+    """Grow a FULL V1 leaf into two leaves under a DA B+tree node.
+
+    Measured ceiling before this existed: a V1 leaf holds ~116 entries of
+    19-character names or ~184 of 6-character names in one 4096-byte block; past
+    that add_entry_v1_leaf returns False and every further add is REFUSED, which
+    is what left 1 of 118 demos unplaceable in a delivered image.
+
+    On-disk layout followed (IRIX 6.5.7m kernel source, the authority for this
+    filesystem version):
+      kern/fs/xfs/xfs_da_btree.h
+        xfs_da_blkinfo_t   { dablk forw; dablk back; u16 magic; u16 pad }   16 B
+        xfs_da_node_hdr_t  { xfs_da_blkinfo_t info; u16 count; u16 level }  +4
+        xfs_da_node_entry_t{ dahash hashval; dablk before }                  8 B
+      kern/fs/xfs/xfs_dir_leaf.c :814  xfs_dir_leaf_split()
+        allocate a new leaf, rebalance the entries across the two, link them
+        with xfs_da_blk_link (info.forw/back), then promote the root.
+      kern/fs/xfs/xfs_da_btree.c :760 xfs_da_root_join / root split: the ROOT
+        becomes an intnode whose `before` fields name the child blocks.
+
+    This implements the two-child case only (max_pairs=2): one full leaf becomes
+    two leaves plus a level-1 node. Deeper trees would need the same routine run
+    again, which the caller can do by invoking this on the new node -- but a
+    two-way split raises the ceiling from ~116 to ~232 entries, which is beyond
+    every demo directory measured.
+
+    Returns (node_fsblock, [leaf0_fsblock, leaf1_fsblock]) or None if it cannot.
+    """
+    from pyirix.xfs.constants import (XFS_DIR_LEAF_MAGIC, XFS_DA_NODE_MAGIC,
+                                      XFS_DIR_LEAF_HDR_SIZE, XFS_DIR_LEAF_ENTRY_SIZE)
+    from pyirix.xfs.inode import set_extents
+    from pyirix.xfs.directory import xfs_da_hashname
+
+    blocksize = sb['sb_blocksize']
+    extents = get_extents(f, part_offset, sb, inode)
+    if not extents:
+        return None
+    _off, old_fs, _cnt = extents[0]
+    f.seek(fsblock_to_offset(sb, part_offset, old_fs))
+    old = bytearray(f.read(blocksize))
+    if len(old) < XFS_DIR_LEAF_HDR_SIZE:
+        return None
+    if struct.unpack('>H', old[8:10])[0] != XFS_DIR_LEAF_MAGIC:
+        return None
+
+    count = struct.unpack('>H', old[12:14])[0]
+    firstused = struct.unpack('>H', old[16:18])[0]
+
+    # Recover every entry as (hashval, inum, name) from the old leaf.
+    ents = []
+    for i in range(count):
+        eoff = XFS_DIR_LEAF_HDR_SIZE + i * XFS_DIR_LEAF_ENTRY_SIZE
+        hashval = struct.unpack('>I', old[eoff:eoff + 4])[0]
+        nameidx = struct.unpack('>H', old[eoff + 4:eoff + 6])[0]
+        nlen = old[eoff + 6]
+        if nlen == 0 or nameidx + 8 + nlen > len(old):
+            continue
+        inum = struct.unpack('>Q', old[nameidx:nameidx + 8])[0]
+        name = bytes(old[nameidx + 8:nameidx + 8 + nlen])
+        ents.append((hashval, inum, name))
+    if not ents:
+        return None
+    ents.sort(key=lambda e: e[0])
+
+    # Split at the median: first half stays, second half moves.
+    mid = len(ents) // 2
+    halves = [ents[:mid], ents[mid:]]
+
+    # alloc_blocks_for_file returns [(fsblock, extent_count)] -- possibly ONE
+    # tuple covering a contiguous run, not one tuple per block. Requiring three
+    # tuples rejected a perfectly good contiguous allocation of 3.
+    allocs = alloc_fn(f, part_offset, sb, 3)     # node + 2 leaves
+    if not allocs:
+        return None
+    fsblocks = []
+    for start, count in allocs:
+        fsblocks.extend(range(start, start + count))
+        if len(fsblocks) >= 3:
+            break
+    if len(fsblocks) < 3:
+        return None
+    node_fs, leaf_fs = fsblocks[0], [fsblocks[1], fsblocks[2]]
+
+    def _build_leaf(entries, forw, back):
+        blk = bytearray(blocksize)
+        struct.pack_into('>I', blk, 0, forw)          # blkinfo.forw
+        struct.pack_into('>I', blk, 4, back)          # blkinfo.back
+        struct.pack_into('>H', blk, 8, XFS_DIR_LEAF_MAGIC)
+        struct.pack_into('>H', blk, 10, 0)            # pad
+        struct.pack_into('>H', blk, 12, len(entries))  # count
+        # namebytes = total of (8 + nlen) name structs
+        nbytes = sum(8 + len(e[2]) for e in entries)
+        struct.pack_into('>H', blk, 14, nbytes)       # namebytes
+        ptr = blocksize
+        for i, (hashval, inum, name) in enumerate(entries):
+            ptr -= (8 + len(name))
+            struct.pack_into('>Q', blk, ptr, inum)
+            blk[ptr + 8:ptr + 8 + len(name)] = name
+            eoff = XFS_DIR_LEAF_HDR_SIZE + i * XFS_DIR_LEAF_ENTRY_SIZE
+            struct.pack_into('>I', blk, eoff, hashval)
+            struct.pack_into('>H', blk, eoff + 4, ptr)
+            blk[eoff + 6] = len(name)
+            blk[eoff + 7] = 0
+        struct.pack_into('>H', blk, 16, ptr)          # firstused
+        blk[18] = 0                                    # holes
+        blk[19] = 0                                    # pad
+        return blk
+
+    leaf0 = _build_leaf(halves[0], forw=leaf_fs[1], back=0)
+    leaf1 = _build_leaf(halves[1], forw=0, back=leaf_fs[0])
+    for fsb, blk in ((leaf_fs[0], leaf0), (leaf_fs[1], leaf1)):
+        f.seek(fsblock_to_offset(sb, part_offset, fsb))
+        f.write(bytes(blk))
+
+    # DA node: level 1, two entries, each naming the child block that precedes it.
+    node = bytearray(blocksize)
+    struct.pack_into('>I', node, 0, 0)                # forw
+    struct.pack_into('>I', node, 4, 0)                # back
+    struct.pack_into('>H', node, 8, XFS_DA_NODE_MAGIC)
+    struct.pack_into('>H', node, 10, 0)               # pad
+    struct.pack_into('>H', node, 12, len(halves))     # count
+    struct.pack_into('>H', node, 14, 1)               # level: 1 == above leaves
+    off = 16
+    for i, half in enumerate(halves):
+        struct.pack_into('>I', node, off, half[0][0])     # hashval of first entry
+        struct.pack_into('>I', node, off + 4, leaf_fs[i])      # before
+        off += 8
+    f.seek(fsblock_to_offset(sb, part_offset, node_fs))
+    f.write(bytes(node))
+
+    set_extents(inode, sb, [(0, node_fs, 1)])
+    inode['di_size'] = blocksize
+    return node_fs, list(leaf_fs)

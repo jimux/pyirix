@@ -12,7 +12,8 @@ from pyirix.xfs.constants import (
     S_IFMT, S_IFDIR, S_IFREG, S_IFLNK, S_IFCHR, S_IFBLK, S_IFIFO,
     XFS_DINODE_FMT_DEV,
     XFS_DINODE_FMT_LOCAL, XFS_DINODE_FMT_EXTENTS, XFS_DINODE_FMT_BTREE,
-    XFS_DIR_LEAF_MAGIC, XFS_DIR2_BLOCK_MAGIC,
+    XFS_DIR_LEAF_MAGIC, XFS_DIR2_BLOCK_MAGIC, XFS_DA_NODE_MAGIC,
+    XFS_DIR_LEAF_HDR_SIZE,
     XFS_DIR2_MAX_SHORT_INUM,
     XFSError, XFSCorruptionError, XFSPathError,
     XFSExistsError, XFSNotEmptyError, XFSNoSpaceError,
@@ -21,12 +22,13 @@ from pyirix.xfs.superblock import read_superblock, write_superblock, zero_log
 from pyirix.xfs.inode import (
     read_inode, write_inode, init_inode,
     read_file_data, write_file_data, read_symlink,
-    get_extents,
+    get_extents, set_extents,
 )
 from pyirix.xfs.directory import (
     read_dir_entries, read_dir_sf, read_dir_sf_parent,
     add_entry_sf, remove_entry_sf, init_dir_sf,
-    add_entry_v1_leaf, remove_entry_v1_leaf,
+    add_entry_v1_leaf, remove_entry_v1_leaf, xfs_da_hashname,
+    v1_leaf_to_node,
     add_entry_dir2_block, remove_entry_dir2_block,
     sf_to_v1_leaf, sf_to_dir2_block,
 )
@@ -765,13 +767,24 @@ def _can_add_dir_entry(f, part_offset, sb, parent_ino, name):
             return False
         magic2 = struct.unpack('>H', header[8:10])[0]
         magic4 = struct.unpack('>I', header[0:4])[0]
+        # A DA B+tree node is a SUPPORTED state now: _add_dir_entry splits a
+        # full leaf and inserts into the right child. Claiming it is safe only
+        # if there is space for the split (node + 2 leaves).
+        if magic2 == XFS_DA_NODE_MAGIC:
+            return _has_contiguous_free(f, part_offset, sb, 3)
+
         if magic2 != XFS_DIR_LEAF_MAGIC and magic4 != XFS_DIR2_BLOCK_MAGIC:
-            return False  # DA B+tree node or unknown format
+            return False  # unknown format
 
         scratch = _ScratchFile(f)
         if magic2 == XFS_DIR_LEAF_MAGIC:
-            return bool(add_entry_v1_leaf(
-                scratch, part_offset, sb, parent_inode, name, _PROBE_INO))
+            if add_entry_v1_leaf(scratch, part_offset, sb, parent_inode,
+                                 name, _PROBE_INO):
+                return True
+            # LEAF FULL -> the real path SPLITS (see _add_dir_entry). Claim it
+            # only if the split's three blocks are available, so a caller is
+            # never told yes and then refused.
+            return _has_contiguous_free(f, part_offset, sb, 3)
         return bool(add_entry_dir2_block(
             scratch, part_offset, sb, parent_inode, name, _PROBE_INO))
 
@@ -829,10 +842,71 @@ def _add_dir_entry(f, part_offset, sb, parent_ino, name, child_ino):
 
             if magic2 == XFS_DIR_LEAF_MAGIC:
                 if add_entry_v1_leaf(f, part_offset, sb, parent_inode, name, child_ino):
+                    write_inode(f, part_offset, sb, parent_ino, parent_inode)
                     return
+                # LEAF FULL. A V1 leaf is a B+tree leaf (xfs_dir_leaf.c), so the
+                # tree grows: split into two leaves under a DA node, then add
+                # into whichever leaf owns the name. Without this the directory
+                # simply stops accepting entries -- measured at 118 long names,
+                # and it left 1 of 118 demos unplaceable.
+                _r = v1_leaf_to_node(
+                    f, part_offset, sb, parent_inode, parent_ino,
+                    lambda ff, o, s, c: alloc_blocks_for_file(ff, o, s, c))
+                if _r:
+                    node_fs, leaf_fs = _r
+                    write_inode(f, part_offset, sb, parent_ino, parent_inode)
+                    # choose the leaf: the one whose first-entry hash is <= ours
+                    nb = xfs_da_hashname(name.encode() if isinstance(name, str) else name)
+                    target = leaf_fs[0]
+                    for i, fsb in enumerate(leaf_fs):
+                        f.seek(fsblock_to_offset(sb, part_offset, fsb))
+                        _blk = f.read(16)
+                        _cnt = struct.unpack('>H', _blk[12:14])[0]
+                        if _cnt:
+                            _e = XFS_DIR_LEAF_HDR_SIZE
+                            f.seek(fsblock_to_offset(sb, part_offset, fsb) + _e)
+                            _h = struct.unpack('>I', f.read(4))[0]
+                            if _h <= nb:
+                                target = fsb
+                    # add_entry_v1_leaf works from the inode's FIRST extent, so
+                    # point the inode at the chosen leaf for the insert.
+                    _realext = get_extents(f, part_offset, sb, parent_inode)
+                    set_extents(parent_inode, sb, [(0, target, 1)])
+                    inserted = add_entry_v1_leaf(f, part_offset, sb, parent_inode,
+                                                 name, child_ino)
+                    set_extents(parent_inode, sb, [(0, node_fs, 1)])
+                    if inserted:
+                        write_inode(f, part_offset, sb, parent_ino, parent_inode)
+                        return
             elif magic4 == XFS_DIR2_BLOCK_MAGIC:
                 if add_entry_dir2_block(f, part_offset, sb, parent_inode, name, child_ino):
+                    write_inode(f, part_offset, sb, parent_ino, parent_inode)
                     return
+            elif magic2 == XFS_DA_NODE_MAGIC:
+                # Already a node: pick the child leaf and insert there.
+                nb = xfs_da_hashname(name.encode() if isinstance(name, str) else name)
+                children = []
+                f.seek(disk_off + 16)
+                _cnt = struct.unpack('>H', header[12:14])[0]
+                for _i in range(_cnt):
+                    _ent = f.read(8)
+                    if len(_ent) < 8:
+                        break
+                    children.append(struct.unpack('>I', _ent[4:8])[0])
+                target = children[0] if children else None
+                for i, fsb in enumerate(children):
+                    f.seek(fsblock_to_offset(sb, part_offset, fsb) + XFS_DIR_LEAF_HDR_SIZE)
+                    _h = struct.unpack('>I', f.read(4))[0]
+                    if _h <= nb:
+                        target = fsb
+                if target is not None:
+                    set_extents(parent_inode, sb, [(0, target, 1)])
+                    inserted = add_entry_v1_leaf(f, part_offset, sb, parent_inode,
+                                                 name, child_ino)
+                    set_extents(parent_inode, sb, [(0, startblock, 1)])
+                    if inserted:
+                        write_inode(f, part_offset, sb, parent_ino, parent_inode)
+                        return
 
     raise _cannot_add(name)
 
