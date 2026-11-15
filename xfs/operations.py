@@ -869,12 +869,16 @@ def _add_dir_entry(f, part_offset, sb, parent_ino, name, child_ino):
                             if _h <= nb:
                                 target = fsb
                     # add_entry_v1_leaf works from the inode's FIRST extent, so
-                    # point the inode at the chosen leaf for the insert.
+                    # point the inode at the chosen leaf for the insert -- then
+                    # RESTORE the extents v1_leaf_to_node recorded. Restoring a
+                    # hand-built [(0, node_fs, 1)] here silently undid the fix
+                    # and left the leaves unmapped, which is why the inode kept
+                    # di_nextents=1 after the write (measured 2026-11-14).
                     _realext = get_extents(f, part_offset, sb, parent_inode)
                     set_extents(parent_inode, sb, [(0, target, 1)])
                     inserted = add_entry_v1_leaf(f, part_offset, sb, parent_inode,
                                                  name, child_ino)
-                    set_extents(parent_inode, sb, [(0, node_fs, 1)])
+                    set_extents(parent_inode, sb, _realext)
                     if inserted:
                         write_inode(f, part_offset, sb, parent_ino, parent_inode)
                         return
@@ -900,10 +904,14 @@ def _add_dir_entry(f, part_offset, sb, parent_ino, name, child_ino):
                     if _h <= nb:
                         target = fsb
                 if target is not None:
+                    # Capture the REAL extent list before repointing: this branch
+                    # never defined `_realext`, so restoring it raised
+                    # UnboundLocalError on the second add after a split (measured).
+                    _realext = get_extents(f, part_offset, sb, parent_inode)
                     set_extents(parent_inode, sb, [(0, target, 1)])
                     inserted = add_entry_v1_leaf(f, part_offset, sb, parent_inode,
                                                  name, child_ino)
-                    set_extents(parent_inode, sb, [(0, startblock, 1)])
+                    set_extents(parent_inode, sb, _realext)
                     if inserted:
                         write_inode(f, part_offset, sb, parent_ino, parent_inode)
                         return

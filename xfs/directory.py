@@ -206,6 +206,11 @@ def _read_dir_block(f, part_offset, sb, inode):
         return []
 
     entries = []
+    # A DA NODE'S CHILDREN ARE ALSO IN THE INODE'S EXTENT LIST (they must be, or
+    # IRIX cannot map them). So iterating extents and parsing each block would
+    # read every leaf TWICE: once via the node's child pointers, once directly.
+    # Measured 2026-11-14: 240 entries returned, 120 unique.
+    _covered = set()
 
     for startoff, startblock, blockcount in extents:
         for blk_idx in range(blockcount):
@@ -218,6 +223,11 @@ def _read_dir_block(f, part_offset, sb, inode):
             magic4 = struct.unpack('>I', block_data[0:4])[0]
             magic2 = struct.unpack('>H', block_data[8:10])[0]
 
+            # Already consumed by a DA node above (a node's children are also
+            # in the extent list, so they appear here too).
+            if startblock in _covered:
+                continue
+
             if magic2 == XFS_DIR_LEAF_MAGIC:
                 _parse_dir_v1_leaf(block_data, entries)
                 continue
@@ -229,8 +239,17 @@ def _read_dir_block(f, part_offset, sb, inode):
             # returned 0. Follow the children, one level (the only depth this
             # writer creates).
             if magic2 == XFS_DA_NODE_MAGIC:
+                _before = len(entries)
                 _parse_dir_da_node(f, part_offset, sb, block_data, entries)
+                # record which child blocks the node just consumed, so the outer
+                # loop does not parse them again as it walks the extents.
+                _cnt = struct.unpack('>H', block_data[12:14])[0]
+                for _i in range(_cnt):
+                    _o = 16 + _i * 8
+                    if _o + 8 <= len(block_data):
+                        _covered.add(struct.unpack('>I', block_data[_o + 4:_o + 8])[0])
                 continue
+
 
             if magic4 not in (XFS_DIR2_BLOCK_MAGIC, XFS_DIR2_DATA_MAGIC):
                 continue
@@ -1519,6 +1538,29 @@ def v1_leaf_to_node(f, part_offset, sb, inode, ino, alloc_fn, max_pairs=2):
     f.seek(fsblock_to_offset(sb, part_offset, node_fs))
     f.write(bytes(node))
 
-    set_extents(inode, sb, [(0, node_fs, 1)])
-    inode['di_size'] = blocksize
+    # THE INODE MUST MAP EVERY BLOCK THE TREE REFERENCES. IRIX walks a
+    # directory through its inode's EXTENT LIST, not by following the node's
+    # child pointers into unmapped space. Recording only the node left the two
+    # leaves unmapped and the guest returned ENOENT for a file that was there
+    # (measured 2026-11-14: AH64 di_nextents=1 while the tree had 3 blocks, and
+    # `gammawarp` exited 127).
+    #
+    # Built from the ACTUAL allocation, not from an assumed contiguous run:
+    # alloc_fn may hand back several extents and the node need not be first in
+    # file order, but for a directory the node IS logical offset 0 and the
+    # leaves follow in `before` order, so the extents are (0, node, n_node)
+    # then each leaf at its own logical offset.
+    # Each block is ONE logical block of the directory; the allocation may have
+    # handed back a contiguous run, but the extent we record per block is 1.
+    # Recording the whole run's count per block gave di_nblocks=9 for a 3-block
+    # tree (measured), because the run length was counted three times.
+    extents, logical = [], 0
+    for fsb in [node_fs] + list(leaf_fs):
+        extents.append((logical, fsb, 1))
+        logical += 1
+
+    set_extents(inode, sb, extents)
+    inode['di_size'] = logical * blocksize
+    inode['di_nblocks'] = logical
+    inode['di_nextents'] = len(extents)
     return node_fs, list(leaf_fs)
