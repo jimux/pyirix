@@ -15,6 +15,7 @@ disassembly; the loader refuses instead (see
 ``prom_loader.extract_prom_code``).
 """
 
+import struct
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -26,12 +27,16 @@ FORMAT_SYSCO_68K = "68k-sysco"         # "ESTFBINR" @0 (Origin L1/L2)
 FORMAT_X86_BIOS = "x86-bios"           # \x55\xaa @0 (Voyager/ATI)
 FORMAT_KONA_ARM = "kona-arm"           # 0xbadc0ffe @0 (InfiniteReality)
 FORMAT_MMSC_X86 = "mmsc-x86"           # 0x5aa5a55a @0x18 (MMSC)
-FORMAT_GE_MICROCODE = "ge-microcode"   # "EA\x00\x01" @0 (GE5/GE7)
-FORMAT_GE7_MICROCODE = "ge7-microcode" # 96 6e 00 01 ... @0 (GE7 header)
-FORMAT_HQ3_MICROCODE = "hq3-microcode" # 00 83 82 @0 (Impact HQ3/MGRAS)
-FORMAT_GR2_MICROCODE = "gr2-microcode" # 01 60 00 05 2b 91 @0 (GR2 ucode)
-FORMAT_VPRO_MICROCODE = "vpro-microcode"  # 04 a4 00 00 01 20 c0 00 @0 (Buzz)
+FORMAT_GE_MICROCODE = "ge-microcode"   # "EA\x00\x01" @0 (GE5 GE microcode object)
+FORMAT_GE7_MICROCODE = "ge7-microcode" # mconT container 0x966e0001 @0, 26-byte records
+FORMAT_HQ3_MICROCODE = "hq3-microcode" # 5120 words, all <= 0x00FFFFFF (Impact HQ3)
+FORMAT_GR2_MICROCODE = "gr2-microcode" # MIPS ECOFF object, GR2/Express microcode
+FORMAT_VPRO_MICROCODE = "vpro-microcode"  # 12-byte records, bits {0,1,88} reserved (Buzz)
 FORMAT_GE11_MICROCODE = "ge11-microcode"  # 12-byte ge_ucode records (GE11/Impact)
+FORMAT_UCODE_OBJECT = "ucode-object"   # 'E'|tag @0 + a section table closing at EOF
+FORMAT_GE_OBJECT = "ge-object"         # 0x014d0003 @0, .text/.data/.bss table
+FORMAT_VOF_TIMING = "vof-timing"       # 0x77229966 @0, VOF timing block
+FORMAT_M68K_MODULE = "m68k-module"     # 0x00000107 @0 + self-relative 68K code
 FORMAT_IO4_JFK4 = "io4-jfk4"           # "JFK4"@0: flat MIPS w/ 0x18 header
 FORMAT_IO4_JKSW = "io4-jksw"           # "JKSW"@0: Everest segment table
 FORMAT_MIPS_VECTOR = "mips-vector"     # classic SGI CPU PROM (IP4..IP30)
@@ -67,6 +72,10 @@ NON_MIPS_FORMATS = frozenset({
     FORMAT_GR2_MICROCODE,
     FORMAT_VPRO_MICROCODE,
     FORMAT_GE11_MICROCODE,
+    FORMAT_UCODE_OBJECT,
+    FORMAT_GE_OBJECT,
+    FORMAT_VOF_TIMING,
+    FORMAT_M68K_MODULE,
     FORMAT_SPD_EEPROM,
     FORMAT_EEPROM_VPD,
     FORMAT_NVRAM_ENV,
@@ -130,15 +139,13 @@ _MAGIC_AT_ZERO = (
     (b'JKSW', FORMAT_IO4_JKSW),
     (b'JFK4', FORMAT_IO4_JFK4),
     (b'EA\x00\x01', FORMAT_GE_MICROCODE),
-    # Content magics established from the PROM_library corpus (NOT from
-    # filenames -- a name is not evidence). Each is a real shared byte header
-    # observed across the family's images. GE7: 4 images share the exact 16-byte
-    # header; HQ3: 2 share the 3-byte prefix; GR2: 2 share 6 bytes; VPro Buzz: 1
-    # image (weakest evidence, kept because the header is self-consistent).
-    (b'\x96\x6e\x00\x01', FORMAT_GE7_MICROCODE),
-    (b'\x00\x83\x82', FORMAT_HQ3_MICROCODE),
-    (b'\x01\x60\x00\x05\x2b\x91', FORMAT_GR2_MICROCODE),
-    (b'\x04\xa4\x00\x00\x01\x20\xc0\x00', FORMAT_VPRO_MICROCODE),
+    # GE7 / HQ3 / GR2 / VPro used to sit here as short byte PREFIXES. Those
+    # prefixes were never the invariant: GR2's six bytes `01 60 00 05 2b 91` are
+    # literally the ECOFF header fields magic@0|nscns@2|top16(timestamp)@4, so it
+    # named one build's timestamp; VPro's eight bytes are one image's first two
+    # records; HQ3's three bytes are the first word of one variant. They now go
+    # through the structural arms below, which reject a near-miss (see
+    # is_gr2_ecoff / is_hq3_microcode / is_ge7_microcode / is_vpro_microcode).
 )
 
 _DESCRIPTIONS = {
@@ -149,11 +156,15 @@ _DESCRIPTIONS = {
     FORMAT_X86_BIOS: "x86 firmware / VGA BIOS (55AA)",
     FORMAT_KONA_ARM: "ARM transport processor firmware (KONA)",
     FORMAT_MMSC_X86: "MMSC controller firmware (x86, 5aa5a55a@0x18)",
-    FORMAT_GE_MICROCODE: "GE5/GE7 graphics microcode",
-    FORMAT_GE7_MICROCODE: "GE7 graphics microcode (96 6e 00 01 header)",
+    FORMAT_GE_MICROCODE: "GE5 graphics microcode object",
+    FORMAT_GE7_MICROCODE: "GE7/GR2 graphics microcode (mconT container)",
     FORMAT_HQ3_MICROCODE: "Impact HQ3/MGRAS graphics microcode",
-    FORMAT_GR2_MICROCODE: "GR2 graphics microcode",
+    FORMAT_GR2_MICROCODE: "GR2/Express graphics microcode (MIPS ECOFF object)",
     FORMAT_VPRO_MICROCODE: "VPro Buzz transform-engine microcode",
+    FORMAT_UCODE_OBJECT: "SGI graphics-microcode object ('E'|tag + section table)",
+    FORMAT_GE_OBJECT: "GE microcode object (0x014d0003, .text/.data/.bss table)",
+    FORMAT_VOF_TIMING: "VOF display-timing block (0x77229966)",
+    FORMAT_M68K_MODULE: "68K graphics microcode module (0x00000107)",
     FORMAT_IO4_JFK4: "IO4 'JFK4' MIPS image (load 0x81800000, code@0x18)",
     FORMAT_IO4_JKSW: JKSW_DESCRIPTION,
     FORMAT_MIPS_VECTOR: "classic SGI MIPS CPU PROM",
@@ -404,12 +415,470 @@ def is_nvram_env(data: bytes) -> bool:
     return False
 
 
+# --- graphics-microcode families, from DECODED STRUCTURE --------------------
+#
+# Every arm below reads fields the image itself carries (a magic plus the record
+# geometry it declares, a section table, a reserved-bit mask). None of them reads
+# a filename, and none of them accepts a short byte prefix on its own: each was
+# calibrated against the whole 1073-file PROM_library corpus, and the controls
+# are in tests/test_prom_format.py (a near-miss of the same SIZE and a
+# random-byte blob are both refused).
+
+def _ieee_single(raw: bytes) -> float:
+    """Decode a 4-byte big-endian IEEE-754 single (NaN for a non-finite pattern)."""
+    return struct.unpack('>f', raw)[0]
+
+
+def _never_set_bits(data: bytes, record: int, min_records: int) -> Optional[List[int]]:
+    """Bit positions never set in any ``record``-byte big-endian word, or None.
+
+    A microcode ISA leaves its reserved/illegal encodings at zero, so the set of
+    bits that never appear set is a content signature that a byte prefix cannot
+    give (a prefix names one build; a reserved-bit mask spans the family). The
+    control that makes this a measurement rather than a coincidence: random
+    bytes of the same size leave NO bit unset, so an empty set never matches.
+    """
+    n = len(data)
+    if record <= 0 or n % record or n < record * min_records:
+        return None
+    count = [0] * (record * 8)
+    for i in range(n // record):
+        value = int.from_bytes(data[i * record:(i + 1) * record], 'big')
+        for bit in range(record * 8):
+            if value >> (record * 8 - 1 - bit) & 1:
+                count[bit] += 1
+    return [b for b in range(record * 8) if count[b] == 0]
+
+
+#: GE11/MGRAS microcode instruction format: 96-bit instructions, 10 reserved bits.
+GE11_RESERVED_BITS = frozenset({65, 69, 71, 73, 75, 78, 82, 83, 85, 87})
+#: VPro Buzz XFORM instruction format: every bit of the two leading bytes is 0
+#: (bits 0..15) and bit 88 is reserved. Measured on the held image.
+VPRO_RESERVED_BITS = frozenset({0, 1, 88})
+#: GE11's second record: the first two address slots are zero-filled and this is
+#: the first written instruction (the reset row, seen in all three held images).
+_GE11_FIRST_RECORD = b"\x8c\xf8\x00\x00\xf9\xc0\x07\xc8"
+
+
+def is_ge11_microcode(data: bytes) -> bool:
+    """True if *data* is a GE11/MGRAS microcode image (12-byte record table).
+
+    GE11 is downloaded as 96-bit instructions (``len /= 12``,
+    ``GE11_UCODE_BASE = 0x200000``) so the record stride is the loader's own
+    arithmetic. Evidence, all from the image: size is a multiple of 12, the two
+    low address slots are zero-filled (the table is indexed from 0 upward), the
+    first written record is the reset row, and the instruction format leaves
+    exactly :data:`GE11_RESERVED_BITS` never set across the whole image.
+    """
+    if len(data) < 0x10000 or len(data) % 12:
+        return False
+    if data[0:0x18] != b"\x00" * 0x18:
+        return False
+    if data[0x18:0x20] != _GE11_FIRST_RECORD:
+        return False
+    never = _never_set_bits(data, 12, 256)
+    return never is not None and GE11_RESERVED_BITS <= set(never)
+
+
+def is_vpro_microcode(data: bytes) -> bool:
+    """True if *data* is VPro (Odyssey) Buzz transform-engine microcode.
+
+    The Buzz XFORM image is a table of 12-byte big-endian microcode records.
+    Evidence, all from the image: the size is a multiple of 12, the instruction
+    format leaves exactly :data:`VPRO_RESERVED_BITS` never set, and the dominant
+    control value of the third word is ``0x0008`` in the high half (the record
+    type the loader streams). The reserved set is the load-bearing part -- an
+    arbitrary 12-byte-strided blob leaves NO bit unset.
+    """
+    n = len(data)
+    if n < 0x2000 or n % 12:
+        return False
+    never = _never_set_bits(data, 12, 128)
+    if never is None or set(never) != VPRO_RESERVED_BITS:
+        return False
+    records = n // 12
+    op8 = sum(1 for i in range(records)
+              if data[i * 12 + 8:i * 12 + 10] == b"\x00\x08")
+    return op8 / records >= 0.40
+
+
+def is_hq3_microcode(data: bytes) -> bool:
+    """True if *data* is an Impact HQ3/MGRAS command-processor microcode image.
+
+    HQ3 is downloaded by ``MgrasDownloadHQ3Ucode`` as a flat
+    ``hquc[jj] = word`` loop with the read-back comparison masked to
+    ``0xffffff``: 5,120 words with only 24 bits significant. Both halves of that
+    are structural, so the test is the size AND the significance mask -- a
+    same-size blob with a non-zero top byte is refused.
+    """
+    if len(data) != 0x5000:
+        return False
+    return not any(data[4 * i] for i in range(len(data) // 4))
+
+
+_GE7_MCONT_MAGIC = 0x966E       # 'mconT' record container, version 1 at +2
+_GE7_RECORD = 26                # u16 address + 20 B payload + 2 x u16 spare
+
+
+def is_ge7_microcode(data: bytes) -> bool:
+    """True if *data* is a GE7/GR2 microcode image in the ``mconT`` container.
+
+    ``Gr2DownloadGE7`` reads a header whose magic distinguishes GE7 from HQ2
+    (``GE7_MAGIC``/``HQ2_MAGIC``) and then consumes the code as fixed 26-byte
+    records (``(length + 6) / sizeof(short) == 13`` shorts: a 2-byte address, a
+    20-byte 103-bit-plus-control payload, and two spare shorts). Four claims have
+    to agree, and the container's own header supplies three of them:
+
+    * the payload length divides exactly by the declared record stride;
+    * record 0 carries address 0 -- the loader writes the 512-word constant pool
+      to ``shram[0..511]`` BEFORE the code, so the table starts at slot 0;
+    * at least one record carries the ``0xffff`` block terminator;
+    * the leading constant pool decodes as finite, plausibly-scaled floats (509
+      of the first 512 do in every held image).
+
+    The magic alone is not the evidence: the same 16 header bytes over a random
+    body fail the address, terminator and float tests (measured; the control is
+    in ``tests/test_prom_format.py``).
+    """
+    n = len(data)
+    if n < 0x100:
+        return False
+    if int.from_bytes(data[0:2], 'big') != _GE7_MCONT_MAGIC:
+        return False
+    if int.from_bytes(data[2:4], 'big') != 1:       # container version
+        return False
+    code_off = int.from_bytes(data[8:12], 'big')
+    if not 0x20 <= code_off < n:
+        return False
+    if (n - code_off) % _GE7_RECORD:
+        return False
+    records = (n - code_off) // _GE7_RECORD
+    if int.from_bytes(data[code_off:code_off + 2], 'big') != 0:
+        return False
+    has_terminator = False
+    good_floats = 0
+    for i in range(min(records, 512)):
+        base = code_off + _GE7_RECORD * i
+        if int.from_bytes(data[base:base + 2], 'big') == 0xFFFF:
+            has_terminator = True
+        value = _ieee_single(data[base + 2:base + 6])
+        if value == value and abs(value) < 1e6:
+            good_floats += 1
+    if not has_terminator:
+        # the terminator may sit past the constant pool
+        has_terminator = any(
+            int.from_bytes(data[code_off + _GE7_RECORD * i:
+                                code_off + _GE7_RECORD * i + 2], 'big') == 0xFFFF
+            for i in range(records))
+    return has_terminator and good_floats >= 480
+
+
+#: MIPS ECOFF ``filehdr.f_magic`` values: 0x0160 = MIPSEB, plus the other MIPS
+#: variants. The GR2/Express and Impact microcode images are ECOFF OBJECTS, not
+#: flat microcode: a ``.text``/``.rdata``/``.data``/``.sdata``/``.bss`` section
+#: table is what the ROM loader reads to place each block.
+_ECOFF_MAGICS = frozenset({0x0160, 0x0162, 0x0163, 0x0164, 0x0166, 0x0168, 0x016A})
+_ECOFF_SECTION_NAMES = frozenset({
+    b'.text', b'.rdata', b'.rodata', b'.data', b'.bss', b'.init', b'.fini',
+    b'.liblist', b'.sdata', b'.sbss', b'.lit4', b'.lit8', b'.ctors', b'.dtors',
+    b'.reginfo', b'.mdebug', b'.comment', b'.lib', b'rsrc',
+})
+#: Sections whose contents live in the file. ``.bss``/``.sbss`` are uninitialised
+#: by definition, so a zero ``scnptr`` there is correct rather than truncation.
+_ECOFF_FILE_SECTIONS = frozenset({
+    b'.text', b'.rdata', b'.rodata', b'.data', b'.init', b'.fini', b'.liblist',
+    b'.sdata', b'.lit4', b'.lit8', b'.ctors', b'.dtors',
+})
+
+
+@dataclass
+class EcoffSection:
+    """One MIPS ECOFF section header (``scnhdr``, 40 bytes) as decoded."""
+    name: bytes
+    paddr: int
+    vaddr: int
+    size: int
+    scnptr: int
+
+
+def parse_ecoff_sections(data: bytes) -> Optional[List[EcoffSection]]:
+    """Decode a MIPS ECOFF object's section table, or None if it is not one.
+
+    The layout is the standard ``filehdr`` + optional header + ``scnhdr[]``:
+    magic@0, ``f_nscns``@2, ``f_symptr``@8, ``f_nsyms``@12, ``f_opthdr``@16, and
+    each 40-byte section header carries name[8], paddr, vaddr, size, scnptr.
+    Returns the sections only when the table is INTERNALLY CONSISTENT: a
+    ``.text`` first, every section name a real SGI section, and the loaded
+    sections chained end-to-start in increasing address order. That is the
+    evidence; the magic alone is not enough to call an image an object.
+    """
+    n = len(data)
+    if n < 0x4C:
+        return None
+    if int.from_bytes(data[0:2], 'big') not in _ECOFF_MAGICS:
+        return None
+    nscns = int.from_bytes(data[2:4], 'big')
+    opthdr = int.from_bytes(data[16:18], 'big')
+    if not 1 <= nscns <= 30 or opthdr not in (0, 0x38):
+        return None
+    base = 20 + opthdr
+    if base + nscns * 40 > n:
+        return None
+    sections = []
+    for i in range(nscns):
+        off = base + i * 40
+        sections.append(EcoffSection(
+            name=data[off:off + 8].rstrip(b'\x00 '),
+            paddr=int.from_bytes(data[off + 8:off + 12], 'big'),
+            vaddr=int.from_bytes(data[off + 12:off + 16], 'big'),
+            size=int.from_bytes(data[off + 16:off + 20], 'big'),
+            scnptr=int.from_bytes(data[off + 20:off + 24], 'big'),
+        ))
+    names = [s.name for s in sections]
+    if names[0] != b'.text' or not all(nm in _ECOFF_SECTION_NAMES for nm in names):
+        return None
+    loaded = [s for s in sections if s.name in _ECOFF_FILE_SECTIONS]
+    if not loaded:
+        return None
+    if not all(loaded[i].vaddr + loaded[i].size == loaded[i + 1].vaddr
+               for i in range(len(loaded) - 1)):
+        return None
+    if not all(s.scnptr >= base + nscns * 40 for s in loaded if s.size):
+        return None
+    return sections
+
+
+def is_gr2_microcode(data: bytes) -> bool:
+    """True if *data* is a GR2/Express graphics-microcode MIPS ECOFF object.
+
+    This replaces the six-byte prefix ``01 60 00 05 2b 91`` the detector used to
+    match. Those bytes are not a format signature -- they are three ECOFF header
+    FIELDS: ``f_magic`` 0x0160, ``f_nscns`` 5, and the top half of the build
+    timestamp at +4. The prefix therefore only matched one build with five
+    sections, and it missed one-section objects entirely. The structural test
+    accepts any consistent MIPS ECOFF object whose loaded sections chain, which
+    is what "GR2 microcode" actually is.
+
+    The held images are SHORT: their section table advertises more bytes than the
+    file carries (the microcode was extracted from an executable, not from a
+    complete on-disk object). The detector names the format from the table, which
+    is what the image declares about itself, and the decode layer refuses it --
+    so a truncated object is still never disassembled as a PROM.
+    """
+    return parse_ecoff_sections(data) is not None
+
+
+#: SGI graphics-microcode OBJECT (the 'µasm' / 'vidasm' / 'vofc' output format).
+#: word0 = 'E' (0x45) | section-tag << 8 | u16 version, then a u32 at +4 giving
+#: the byte length of a table of (file offset, length) section records. Record 0
+#: is the identity string; the remaining records are code and data; the extents
+#: are chained in order and the last one closes on EOF. Header size follows the
+#: version (20 bytes for v1, 44 for v3).
+_UCODE_OBJECT_HDR = {1: 20, 3: 44}
+
+
+def parse_ucode_object(data: bytes):
+    """Decode the section table of an SGI graphics-microcode object, or None.
+
+    Returns ``(version, tag, sections, identity)`` where ``sections`` is the list
+    of ``(offset, length)`` records in file order. The acceptance conditions are
+    the file's own claims being mutually consistent -- every record in bounds
+    and positive, the records CHAINED end-to-start, the first record starting
+    exactly at the header's end, and the last closing at EOF (up to 3 bytes of
+    odd-length padding) -- plus a printable identity string. A near-miss fails at
+    least one of these; a random blob cannot satisfy them.
+    """
+    n = len(data)
+    if n < 24 or data[0:1] != b'E':
+        return None
+    version = int.from_bytes(data[2:4], 'big')
+    hdr = _UCODE_OBJECT_HDR.get(version)
+    if hdr is None or hdr > n:
+        return None
+    if int.from_bytes(data[4:8], 'big') != hdr:
+        return None
+    sections: List[tuple] = []
+    for i in range((hdr - 4) // 8):
+        off = int.from_bytes(data[4 + 8 * i:8 + 8 * i], 'big')
+        length = int.from_bytes(data[8 + 8 * i:12 + 8 * i], 'big')
+        if (off, length) == (0, 0):
+            break
+        if off <= 0 or length <= 0 or off + length > n:
+            return None
+        if sections and off != sections[-1][0] + sections[-1][1]:
+            return None
+        sections.append((off, length))
+    if len(sections) < 2 or sections[0][0] != hdr:
+        return None
+    if not 0 <= n - (sections[-1][0] + sections[-1][1]) <= 3:
+        return None
+    ident = data[sections[0][0]:sections[0][0] + sections[0][1]]
+    if not ident:
+        return None
+    printable = sum(1 for c in ident if c == 0 or 9 <= c < 127)
+    if printable / len(ident) < 0.95:
+        return None
+    if sum(1 for c in ident if 65 <= c < 123) < 3:
+        return None
+    return version, data[1], sections, ident
+
+
+def is_ucode_object(data: bytes) -> bool:
+    """True if *data* is an SGI graphics-microcode object ('E'|tag container)."""
+    return parse_ucode_object(data) is not None
+
+
+def _ge_object_sections(data: bytes):
+    """Decode a ``0x014d0003`` GE microcode object's section table, or None.
+
+    The header is ``u32 0x014d0003`` then four zero words, and the section table
+    starts at +0x38 with 40-byte records: ``name[8]``, then four u32 fields --
+    physical address, virtual address, size and file offset. The names are the
+    standard ``.text``/``.data``/``.bss`` triple and every section that HAS a file
+    image starts at or after the table's end and chains end-to-start in file
+    order. That is the evidence; the magic alone is not enough.
+    """
+    n = len(data)
+    if n < 0x100 or int.from_bytes(data[0:4], 'big') != 0x014D0003:
+        return None
+    base, stride = 0x38, 40
+    sections = []
+    for i in range(8):
+        off = base + i * stride
+        if off + stride > n:
+            break
+        name = data[off:off + 8].rstrip(b'\x00')
+        if not name or name[0:1] != b'.' or not all(32 <= c < 127 for c in name):
+            break
+        paddr, vaddr, size, foff = (
+            int.from_bytes(data[off + 8 + 4 * k:off + 12 + 4 * k], 'big')
+            for k in range(4))
+        sections.append(EcoffSection(name=name, paddr=paddr, vaddr=vaddr,
+                                     size=size, scnptr=foff))
+    if len(sections) < 2 or sections[0].name != b'.text':
+        return None
+    loaded = [s for s in sections if s.scnptr]
+    if not loaded:
+        return None
+    if not all(s.scnptr >= base + len(sections) * stride for s in loaded):
+        return None
+    if not all(loaded[i].scnptr + loaded[i].size == loaded[i + 1].scnptr
+               for i in range(len(loaded) - 1)):
+        return None
+    return sections
+
+
+def is_ge_object(data: bytes) -> bool:
+    """True if *data* is a GE microcode object in the ``0x014d0003`` container.
+
+    A distinct flavour from the ECOFF objects: same idea (a named section table
+    that says where each block goes) but a different, 40-byte record layout and a
+    different magic. Six held images use it, all with the ``.text/.data/.bss``
+    triple and chained file images.
+    """
+    return _ge_object_sections(data) is not None
+
+
+def vof_timing_run_lengths(data: bytes):
+    """Return ``(distinct_values, max_run, mean_run)`` for a VOF timing block.
+
+    A VOF block is a header plus a byte-oriented DISPLAY TIMING table: runs of the
+    same byte value (a scanline count, a blanking duration, a sync width). The
+    signature is therefore run structure, not a value set -- random bytes of the
+    same size give a maximum run of 2 and a mean of 1.01, while every held VOF
+    table has a maximum run of 33 and a mean of 1.8-1.9.
+    """
+    body = data[8:]
+    if not body:
+        return None
+    runs = []
+    current = 1
+    for prev, cur in zip(body, body[1:]):
+        if cur == prev:
+            current += 1
+        else:
+            runs.append(current)
+            current = 1
+    runs.append(current)
+    return len(set(body)), max(runs), sum(runs) / len(runs)
+
+
+def is_vof_timing(data: bytes) -> bool:
+    """True if *data* is a VOF display-timing block (magic ``0x77229966``).
+
+    Requires the magic, a plausible size, and the run structure above -- at least
+    one run of 8 or more identical bytes and a mean run length of 1.5 or more.
+    A random same-size body with the magic stamped on it is refused.
+    """
+    n = len(data)
+    if n < 0x100 or n > 0x8000:
+        return False
+    if int.from_bytes(data[0:4], 'big') != 0x77229966:
+        return False
+    got = vof_timing_run_lengths(data)
+    if got is None:
+        return False
+    _distinct, max_run, mean_run = got
+    return max_run >= 8 and mean_run >= 1.5
+
+
+#: 68K absolute control-transfer opcodes used to test a graphics microcode
+#: module's own declared load address (``JSR <abs.l>`` / ``JMP <abs.l>``).
+_M68K_JSR_ABSL = 0x4EB9
+_M68K_JMP_ABSL = 0x4EF9
+_M68K_CODE_OFFSET = 0x20
+_M68K_MIN_TARGETS = 64
+
+
+def m68k_module_targets(data: bytes):
+    """Return ``(load_address, targets, inside)`` for a 68K graphics module.
+
+    Some graphics boards carry a 68K microcontroller whose microcode module is a
+    header followed by position-dependent 68K code. The header is
+    ``0x00000107`` @0, a code size @4 and the module's own LOAD ADDRESS @28. The
+    test is not the magic (12 files share it and so could a coincidental blob):
+    it is that the code's absolute ``JSR``/``JMP`` targets land inside
+    ``[load, load + len)``. Measured on the 12 held images, 564-626 targets each
+    and 100% of them inside; the same header over a RANDOM body yields no
+    in-range targets at all (the control in tests/test_prom_format.py).
+    """
+    n = len(data)
+    if n < 0x1000 or int.from_bytes(data[0:4], 'big') != 0x00000107:
+        return None
+    load = int.from_bytes(data[28:32], 'big')
+    if load < 0x1000:
+        return None
+    words = (n - _M68K_CODE_OFFSET) // 2
+    targets = inside = 0
+    for i in range(words - 2):
+        off = _M68K_CODE_OFFSET + 2 * i
+        if int.from_bytes(data[off:off + 2], 'big') in (_M68K_JSR_ABSL, _M68K_JMP_ABSL):
+            target = int.from_bytes(data[off + 2:off + 6], 'big')
+            targets += 1
+            if load <= target < load + n:
+                inside += 1
+    return load, targets, inside
+
+
+def is_m68k_module(data: bytes) -> bool:
+    """True if *data* is a position-dependent 68K graphics-microcode module."""
+    got = m68k_module_targets(data)
+    if got is None:
+        return False
+    _load, targets, inside = got
+    return targets >= _M68K_MIN_TARGETS and inside == targets
+
+
 def detect_prom_format(data: bytes) -> str:
     """Return the firmware format of *data* (one of the ``FORMAT_*`` constants).
 
     Magic checks (definitive) run first, most-specific first; the MIPS vector
     heuristic is only a fallback, so an SHDR container is never mistaken for a
-    MIPS PROM whose first word merely decodes as a branch.
+    MIPS PROM whose first word merely decodes as a branch. The graphics-microcode
+    arms run after the magics and before the vector fallback: each validates a
+    structure the image declares about itself (record geometry, section table,
+    reserved-bit mask), never a short prefix, and each is refused by the loader
+    afterwards -- naming a microcode family is not a licence to disassemble it.
     """
     if len(data) < 16:
         return FORMAT_UNKNOWN
@@ -437,8 +906,27 @@ def detect_prom_format(data: bytes) -> str:
     if len(data) >= 0x1C and data[0x18:0x1C] == b'\x5a\xa5\xa5\x5a':
         return FORMAT_MMSC_X86
 
+    # Graphics-microcode families, from decoded structure. These run before the
+    # MIPS-vector fallback because several are small enough to be mistaken for a
+    # chip dump by that heuristic and none is a CPU PROM.
     if is_ge11_microcode(data):
         return FORMAT_GE11_MICROCODE
+    if is_vpro_microcode(data):
+        return FORMAT_VPRO_MICROCODE
+    if is_hq3_microcode(data):
+        return FORMAT_HQ3_MICROCODE
+    if is_ge7_microcode(data):
+        return FORMAT_GE7_MICROCODE
+    if is_ucode_object(data):
+        return FORMAT_UCODE_OBJECT
+    if is_gr2_microcode(data):
+        return FORMAT_GR2_MICROCODE
+    if is_ge_object(data):
+        return FORMAT_GE_OBJECT
+    if is_vof_timing(data):
+        return FORMAT_VOF_TIMING
+    if is_m68k_module(data):
+        return FORMAT_M68K_MODULE
 
     if is_spd_eeprom(data):
         return FORMAT_SPD_EEPROM
