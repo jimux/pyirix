@@ -37,6 +37,10 @@ FORMAT_UCODE_OBJECT = "ucode-object"   # 'E'|tag @0 + a section table closing at
 FORMAT_GE_OBJECT = "ge-object"         # 0x014d0003 @0, .text/.data/.bss table
 FORMAT_VOF_TIMING = "vof-timing"       # 0x77229966 @0, VOF timing block
 FORMAT_M68K_MODULE = "m68k-module"     # 0x00000107 @0 + self-relative 68K code
+FORMAT_PROM_11EE_TABLE = "prom-11ee-table"  # 0x000011ee@0 + (j,nop) entry table
+FORMAT_PROM_11EE_CODE = "prom-11ee-code"    # 0x000011ee@0 + MIPS code at +0x20
+FORMAT_MIPS_AR_ARCHIVE = "mips-ar-archive"  # !<arch> EB symbol index + ECOFF member
+FORMAT_MIPS_ECOFF = "mips-ecoff"       # MIPS ECOFF object, 2+ loaded segments
 FORMAT_IO4_JFK4 = "io4-jfk4"           # "JFK4"@0: flat MIPS w/ 0x18 header
 FORMAT_IO4_JKSW = "io4-jksw"           # "JKSW"@0: Everest segment table
 FORMAT_MIPS_VECTOR = "mips-vector"     # classic SGI CPU PROM (IP4..IP30)
@@ -76,6 +80,10 @@ NON_MIPS_FORMATS = frozenset({
     FORMAT_GE_OBJECT,
     FORMAT_VOF_TIMING,
     FORMAT_M68K_MODULE,
+    FORMAT_PROM_11EE_TABLE,
+    FORMAT_PROM_11EE_CODE,
+    FORMAT_MIPS_AR_ARCHIVE,
+    FORMAT_MIPS_ECOFF,
     FORMAT_SPD_EEPROM,
     FORMAT_EEPROM_VPD,
     FORMAT_NVRAM_ENV,
@@ -165,6 +173,14 @@ _DESCRIPTIONS = {
     FORMAT_GE_OBJECT: "GE microcode object (0x014d0003, .text/.data/.bss table)",
     FORMAT_VOF_TIMING: "VOF display-timing block (0x77229966)",
     FORMAT_M68K_MODULE: "68K graphics microcode module (0x00000107)",
+    FORMAT_PROM_11EE_TABLE:
+        "graphics PROM, 0x000011ee header + (j,nop) entry table",
+    FORMAT_PROM_11EE_CODE:
+        "graphics PROM, 0x000011ee header + MIPS code at +0x20",
+    FORMAT_MIPS_AR_ARCHIVE:
+        "MIPS 'ar' archive (EB symbol index + ECOFF member)",
+    FORMAT_MIPS_ECOFF:
+        "MIPS ECOFF object, loaded sections in 2+ 16 MiB segments",
     FORMAT_IO4_JFK4: "IO4 'JFK4' MIPS image (load 0x81800000, code@0x18)",
     FORMAT_IO4_JKSW: JKSW_DESCRIPTION,
     FORMAT_MIPS_VECTOR: "classic SGI MIPS CPU PROM",
@@ -601,6 +617,18 @@ class EcoffSection:
     scnptr: int
 
 
+#: Chain window for a MIPS ECOFF object's loaded sections. A linked SGI object
+#: with a ``.init`` section puts ``.text``/``.init`` in one 16 MiB segment
+#: (0x004xxxxx) and ``.rdata``/``.data``/``.sdata`` in another (0x1000xxxx), so
+#: the sections chain END-TO-START WITHIN a segment, not across the whole file.
+ECOFF_SEGMENT = 1 << 24
+
+
+def _ecoff_loaded(sections: List[EcoffSection]) -> List[EcoffSection]:
+    """Sections whose contents live in the file, in table order."""
+    return [s for s in sections if s.name in _ECOFF_FILE_SECTIONS]
+
+
 def parse_ecoff_sections(data: bytes) -> Optional[List[EcoffSection]]:
     """Decode a MIPS ECOFF object's section table, or None if it is not one.
 
@@ -609,8 +637,18 @@ def parse_ecoff_sections(data: bytes) -> Optional[List[EcoffSection]]:
     each 40-byte section header carries name[8], paddr, vaddr, size, scnptr.
     Returns the sections only when the table is INTERNALLY CONSISTENT: a
     ``.text`` first, every section name a real SGI section, and the loaded
-    sections chained end-to-start in increasing address order. That is the
-    evidence; the magic alone is not enough to call an image an object.
+    sections chained end-to-start IN ADDRESS ORDER WITHIN EACH 16 MiB SEGMENT.
+    That is the evidence; the magic alone is not enough to call an image an
+    object.
+
+    The chain test used to span the whole file, which wrongly refused every
+    object whose ``.text``/``.init`` pair sits at 0x0040xxxx and whose data
+    sections sit at 0x1000xxxx -- three held images (``bins/unknown/te_38a3e8ac.u``,
+    ``bins/graphics/re/1280x1024_60_68f3c182.u``,
+    ``bins/graphics/re/1600x1200_60_48cdaae3.u``). The per-segment rule accepts
+    22 corpus files where the flat rule accepted 19, and the 19 are a strict
+    SUBSET of the 22 (measured; no file loses acceptance). A table whose chain
+    breaks INSIDE one segment is still refused.
     """
     n = len(data)
     if n < 0x4C:
@@ -637,15 +675,26 @@ def parse_ecoff_sections(data: bytes) -> Optional[List[EcoffSection]]:
     names = [s.name for s in sections]
     if names[0] != b'.text' or not all(nm in _ECOFF_SECTION_NAMES for nm in names):
         return None
-    loaded = [s for s in sections if s.name in _ECOFF_FILE_SECTIONS]
+    loaded = _ecoff_loaded(sections)
     if not loaded:
         return None
-    if not all(loaded[i].vaddr + loaded[i].size == loaded[i + 1].vaddr
-               for i in range(len(loaded) - 1)):
-        return None
+    prev = None
+    for s in loaded:
+        if not s.size:
+            continue
+        if prev is not None and (s.vaddr // ECOFF_SEGMENT) == \
+                (prev.vaddr // ECOFF_SEGMENT):
+            if prev.vaddr + prev.size != s.vaddr:
+                return None
+        prev = s
     if not all(s.scnptr >= base + nscns * 40 for s in loaded if s.size):
         return None
     return sections
+
+
+def ecoff_segments(sections: List[EcoffSection]) -> List[int]:
+    """Sorted 16 MiB segment indices that hold a loaded section's contents."""
+    return sorted({s.vaddr // ECOFF_SEGMENT for s in _ecoff_loaded(sections) if s.size})
 
 
 def is_gr2_microcode(data: bytes) -> bool:
@@ -659,13 +708,34 @@ def is_gr2_microcode(data: bytes) -> bool:
     accepts any consistent MIPS ECOFF object whose loaded sections chain, which
     is what "GR2 microcode" actually is.
 
-    The held images are SHORT: their section table advertises more bytes than the
+    Held images are SHORT: their section table advertises more bytes than the
     file carries (the microcode was extracted from an executable, not from a
     complete on-disk object). The detector names the format from the table, which
     is what the image declares about itself, and the decode layer refuses it --
     so a truncated object is still never disassembled as a PROM.
+
+    ``gr2-microcode`` names the SINGLE-SEGMENT objects (all 18 held images: the
+    microcode itself, loaded at 0x00000000 or 0x10000000). An object that spans
+    2+ segments is a linked object rather than a microcode block and is named
+    ``mips-ecoff`` by :func:`is_mips_ecoff` instead.
     """
-    return parse_ecoff_sections(data) is not None
+    sections = parse_ecoff_sections(data)
+    return sections is not None and len(ecoff_segments(sections)) == 1
+
+
+def is_mips_ecoff(data: bytes) -> bool:
+    """True if *data* is a linked MIPS ECOFF object spanning 2+ segments.
+
+    A linked object carries its own ``.init`` (so ``.text`` + ``.init`` fill one
+    16 MiB segment) and its data sections in a second segment at 0x10000000;
+    the three held examples are ``bins/unknown/te_38a3e8ac.u`` (8 sections,
+    ``.text``@0x00400190/.data@0x100006c0) and two truncated 10-section objects
+    under ``bins/graphics/re``. Keeping this a SEPARATE name is the point: the 18
+    images already classified ``gr2-microcode`` keep that verdict, and the
+    segment layout is what the two names disagree about.
+    """
+    sections = parse_ecoff_sections(data)
+    return sections is not None and len(ecoff_segments(sections)) >= 2
 
 
 #: SGI graphics-microcode OBJECT (the 'µasm' / 'vidasm' / 'vofc' output format).
@@ -869,6 +939,325 @@ def is_m68k_module(data: bytes) -> bool:
     return targets >= _M68K_MIN_TARGETS and inside == targets
 
 
+#: SGI graphics-board PROMs (Impact MG1, Reality-Engine GE8/GE10) carry their own
+#: 16-byte header: ``0x000011ee``@0, the BOARD'S OWN CAPACITY@4 (0x00020000 for a
+#: 128 KiB part, 0x00040000 for a 256 KiB part), a zero word@8, and a word@12 that
+#: is either an entry index (MG1) or a version pair (GE10 0x0003000d, GE8 0x0c).
+#: Everything from +0x10 is the board's own MIPS code and data -- these PROMs run
+#: on the graphics board's CPU, never on the host, so they are not a CPU PROM.
+_PROM_11EE_MAGIC = 0x000011EE
+_PROM_11EE_CODE_OFF = 0x20
+#: Enough of an image to judge: a 64 KiB floor rules out a coincidental header on
+#: a chip dump, and the recorded capacity must be able to hold what is present.
+_PROM_11EE_MIN_SIZE = 0x10000
+#: MIPS code-plausibility thresholds for a 256-word (1 KiB) window. Measured:
+#: every held image scores 1.000 with >= 2 ``jr $ra`` and >= 4 J/JAL in the window,
+#: while the same window over a pseudo-random tail (400 seeds per image) scores at
+#: most 0.895, with **zero** ``jr $ra`` in all 1200 trials -- the return opcode
+#: appears in real code and essentially never in random data, so it is the
+#: discriminating claim.
+_PROM_11EE_WINDOW = 256
+_PROM_11EE_MIN_PLAUSIBLE = 0.99
+_PROM_11EE_MIN_JR = 2
+_PROM_11EE_MIN_JUMPS = 4
+
+
+def _mips_plausible(word: int) -> bool:
+    """True if *word* decodes as an instruction a compiler would emit.
+
+    Opcodes outside the MIPS I-III set (reserved/immediate-full) are implausible;
+    SPECIAL and REGIMM are checked against their real funct/rt fields, and the
+    COP0/COP1/COP2 space only accepts the transfer and control sub-opcodes.
+    """
+    op = word >> 26
+    if op not in _MIPS_OPS:
+        return False
+    if op == 0x00:
+        return (word & 0x3F) in _MIPS_SPECIAL
+    if op == 0x01:
+        return ((word >> 16) & 0x1F) in _MIPS_REGIMM
+    if op in (0x10, 0x11, 0x12):
+        return ((word >> 21) & 0x1F) in (0, 1, 2, 3, 4, 0x10)
+    return True
+
+
+_MIPS_SPECIAL = frozenset(list(range(0x00, 0x10)) + [
+    0x10, 0x11, 0x12, 0x18, 0x19, 0x1A, 0x1B, 0x20, 0x21, 0x22, 0x23, 0x24,
+    0x25, 0x26, 0x27, 0x2A, 0x2B, 0x30, 0x31, 0x32, 0x33])
+_MIPS_REGIMM = frozenset({0, 1, 2, 3, 16, 17, 18, 19, 20, 21, 22, 23})
+_MIPS_OPS = frozenset([
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+    0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x14, 0x15, 0x18, 0x19, 0x1A,
+    0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+    0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x34, 0x35,
+    0x36, 0x38, 0x39, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F])
+
+
+def mips_code_window(data: bytes, start: int, words: int):
+    """Measure a code window: ``(words, plausible, jr_ra, jumps)``.
+
+    ``plausible`` counts words that decode as a compiler-emitted instruction,
+    ``jr_ra`` counts the canonical subroutine return ``jr $ra`` (0x03e00008)
+    and ``jumps`` counts J/JAL. Counted, not scored: a caller compares them.
+    """
+    end = min(len(data) - 3, start + 4 * words)
+    total = plausible = jr_ra = jumps = 0
+    for off in range(start, end, 4):
+        word = int.from_bytes(data[off:off + 4], 'big')
+        total += 1
+        plausible += _mips_plausible(word)
+        jr_ra += word == 0x03E00008
+        jumps += (word >> 26) in (0x02, 0x03)
+    return total, plausible, jr_ra, jumps
+
+
+def _prom_11ee_header(data: bytes):
+    """Decode a graphics-board PROM header, or None.
+
+    Three independent claims: the ``0x000011ee`` magic, a recorded capacity that
+    is a power of two able to hold the file, and the zero word at +8.
+    """
+    if len(data) < _PROM_11EE_MIN_SIZE:
+        return None
+    if int.from_bytes(data[0:4], 'big') != _PROM_11EE_MAGIC:
+        return None
+    capacity = int.from_bytes(data[4:8], 'big')
+    if int.from_bytes(data[8:12], 'big') != 0:
+        return None
+    if capacity & (capacity - 1) or not len(data) <= capacity <= 0x1000000:
+        return None
+    return capacity, int.from_bytes(data[12:16], 'big')
+
+
+def prom_11ee_entry_table(data: bytes):
+    """The ``(j <target>, nop)`` table an MG1 PROM starts with, or [].
+
+    Each 8-byte record is ``j`` (opcode 2) whose target is word-aligned, followed
+    by a zero delay slot. The table starts at +0x10 and ends at the first record
+    that is not one; the records are one branch table, so their targets share a
+    64 KiB page.
+    """
+    off, targets = 0x10, []
+    while off + 8 <= len(data):
+        word = int.from_bytes(data[off:off + 4], 'big')
+        delay = int.from_bytes(data[off + 4:off + 8], 'big')
+        if (word >> 26) != 0x02 or delay != 0:
+            break
+        target = (word & 0x03FFFFFF) << 2
+        if target & 3:
+            break
+        targets.append(target)
+        off += 8
+    if targets and len({t >> 16 for t in targets}) != 1:
+        return []
+    return targets
+
+
+def is_prom_11ee_table(data: bytes) -> bool:
+    """True for an MG1 graphics-board PROM: header + ``(j,nop)`` entry table.
+
+    The claims, all from the image's own layout: the header (magic, capacity,
+    zero word), a table of >= 2 ``(j,nop)`` records at +0x10 whose targets share
+    one 64 KiB page, a NUL-terminated printable banner EXACTLY where the table
+    ends (MG1's is ``CRIMSON startup prom Rev 0.00 12/25/91``), code from +0x80,
+    and a code window that is plausible MIPS with real ``jr $ra`` returns.
+
+    The banner is a corroborating string, not the evidence: an arm that fired on
+    ``CRIMSON`` would be a filename-grade inference in printable form. What the
+    arm tests is the record geometry and the code behind it -- a same-size body
+    carrying the first 32 bytes and a random tail has no ``jr $ra`` at all.
+    """
+    if _prom_11ee_header(data) is None:
+        return False
+    targets = prom_11ee_entry_table(data)
+    if len(targets) < 2:
+        return False
+    end = 0x10 + 8 * len(targets)
+    nul = data.find(b'\x00', end)
+    if nul < end + 8 or nul > 0x80:
+        return False
+    if not all(32 <= c < 127 or c in (9, 10, 13) for c in data[end:nul]):
+        return False
+    total, plausible, jr_ra, jumps = mips_code_window(
+        data, 0x80, _PROM_11EE_WINDOW)
+    return (total == _PROM_11EE_WINDOW
+            and plausible / total >= _PROM_11EE_MIN_PLAUSIBLE
+            and jr_ra >= _PROM_11EE_MIN_JR and jumps >= _PROM_11EE_MIN_JUMPS)
+
+
+def is_prom_11ee_code(data: bytes) -> bool:
+    """True for a GE8/GE10 graphics-board PROM: header + MIPS code at +0x20.
+
+    The same header, but the words at +0x10 are entry addresses and a code
+    extender rather than a branch table, and the board's code starts at +0x20.
+    The evidence is the code: a 256-word window that is entirely plausible MIPS
+    with >= 2 ``jr $ra`` and >= 4 J/JAL. An MG1 image is excluded explicitly
+    (it has the table instead), so the two flavours never both fire; and a
+    same-size body with the header and a random tail is refused, because random
+    data produced 0 ``jr $ra`` in all 1200 measured trials.
+    """
+    if _prom_11ee_header(data) is None or prom_11ee_entry_table(data):
+        return False
+    total, plausible, jr_ra, jumps = mips_code_window(
+        data, _PROM_11EE_CODE_OFF, _PROM_11EE_WINDOW)
+    return (total == _PROM_11EE_WINDOW
+            and plausible / total >= _PROM_11EE_MIN_PLAUSIBLE
+            and jr_ra >= _PROM_11EE_MIN_JR and jumps >= _PROM_11EE_MIN_JUMPS)
+
+
+#: ``ar`` archive magic, then a 60-byte member header per member. IRIX writes its
+#: symbol table as the FIRST member, named ``__________EBEB_`` for a big-endian
+#: archive (``EB`` = MIPSEB, ``EB`` = the "EB" hash/index flavour) and
+#: ``__________EL``/other for the little-endian and 64-bit variants.
+_AR_MAGIC = b'!<arch>\n'
+_AR_HDR = 60
+_AR_FMAG = b'`\n'
+_AR_OCTAL = b'01234567'
+#: The symbol-index body (`armap`): a count, that many 8-byte (name offset,
+#: member offset) slots, a byte count, then the NUL-separated name block.
+_AR_INDEX_SIZES = frozenset({32, 64})
+
+
+def parse_ar_members(data: bytes):
+    """Decode an ``ar`` archive's member headers, or None if they do not parse.
+
+    Each header is ``name[16] date[12] uid[6] gid[6] mode[8] size[10] "`\\n"``:
+    the name is space-padded, the numbers are space-padded ASCII (date/uid/gid/
+    size decimal, mode octal). A member body follows immediately and is padded
+    to an even offset. Returns ``[dict]`` with the decoded fields, or None when
+    any header is malformed -- the layout is the evidence, so a body whose
+    headers do not parse is not an archive.
+
+    Truncation is reported rather than hidden: the six held archives are all cut
+    inside their LAST member (``shmiq.o`` declares 14956 B and has 715), so
+    ``truncated`` on the final member is expected and is the caller's decision.
+    """
+    n = len(data)
+    if not data.startswith(_AR_MAGIC):
+        return None
+    off, members = len(_AR_MAGIC), []
+    while off + _AR_HDR <= n:
+        hdr = data[off:off + _AR_HDR]
+        if hdr[58:60] != _AR_FMAG:
+            return None
+        name = hdr[0:16].rstrip(b' ').rstrip(b'/')
+        date = hdr[16:28].rstrip(b' ')
+        uid = hdr[28:34].rstrip(b' ')
+        gid = hdr[34:40].rstrip(b' ')
+        mode = hdr[40:48].rstrip(b' ')
+        size = hdr[48:58].rstrip(b' ')
+        if not name or not all(32 <= c < 127 for c in name):
+            return None
+        if not (date.isdigit() and uid.isdigit() and gid.isdigit()
+                and size.isdigit()):
+            return None
+        if not mode or not all(c in _AR_OCTAL for c in mode):
+            return None
+        length = int(size)
+        body = data[off + _AR_HDR:off + _AR_HDR + length]
+        members.append({"offset": off, "name": name, "date": int(date),
+                        "mode": mode, "size": length, "body": body,
+                        "truncated": len(body) < length})
+        off = off + _AR_HDR + length + (length & 1)
+    return members or None
+
+
+def ar_symbol_index(body: bytes):
+    """Decode the ``__________EBEB_`` symbol index, or None if it is not one.
+
+    Three claims, all the member's own: the slot count word is one of the two
+    sizes IRIX writes (32 or 64), ``4 + 8*count + 4 + textlen`` is EXACTLY the
+    member's length, and the pairs that follow name a real member -- each name
+    offset lands on the start of a NUL-terminated printable name in the block at
+    the end, and each member offset lands on a following member's header.
+
+    Measured on the six held archives: 8-17 non-empty slots each, every member
+    offset equal to the next member's real file offset, and the lengths closing
+    exactly (e.g. 4 + 8*32 + 4 + 86 == 350).
+    """
+    n = len(body)
+    if n < 24:
+        return None
+    slots = int.from_bytes(body[0:4], 'big')
+    if slots not in _AR_INDEX_SIZES:
+        return None
+    names_at = 4 + 8 * slots
+    if names_at + 4 > n:
+        return None
+    text_len = int.from_bytes(body[names_at:names_at + 4], 'big')
+    if names_at + 4 + text_len != n:
+        return None
+    text = body[names_at + 4:]
+    name_starts = {i for i in range(len(text)) if i == 0 or text[i - 1] == 0}
+    if not all(c == 0 or 32 <= c < 127 for c in text):
+        return None
+    if not text or text[-1] != 0:
+        return None
+    entries = []
+    for i in range(slots):
+        name_off = int.from_bytes(body[4 + 8 * i:8 + 8 * i], 'big')
+        member_off = int.from_bytes(body[8 + 8 * i:12 + 8 * i], 'big')
+        if name_off == 0 and member_off == 0:
+            continue
+        if name_off not in name_starts or not member_off:
+            return None
+        end = text.find(b'\x00', name_off)
+        entries.append((text[name_off:end], member_off))
+    return entries or None
+
+
+def is_mips_ar_archive(data: bytes) -> bool:
+    """True for an IRIX MIPS ``ar`` archive of ECOFF objects.
+
+    The evidence is the archive's own layout, in this order: the ``!<arch>\\n``
+    magic, a first member named ``__________EBEB_`` (the big-endian MIPS symbol
+    index) whose body parses as an index (:func:`ar_symbol_index`) and whose
+    member offsets point at the real following headers, every non-final member
+    complete (the held archives are cut inside their last), and the later
+    members being MIPS ECOFF objects -- a ``0x0160``-family filehdr naming
+    ``.text`` first. ``file(1)`` reads the same six as "MIPS archive with MIPSEB
+    members and an EB hash table"; that is the outside oracle, not the evidence.
+
+    A same-size body with the ``!<arch>`` line and the index member preserved and
+    the rest random fails at the index's length arithmetic and at the ECOFF
+    filehdr, so the arm is not satisfied by the first 60 bytes.
+    """
+    members = parse_ar_members(data)
+    if members is None or len(members) < 2:
+        return False
+    if not members[0]["name"].startswith(b"__________E"):
+        return False
+    if not members[0]["name"].endswith(b"_"):
+        return False
+    entries = ar_symbol_index(members[0]["body"])
+    if entries is None:
+        return False
+    offsets = {m["offset"] for m in members[1:]}
+    if not all(off in offsets for _name, off in entries):
+        return False
+    if any(m["truncated"] for m in members[:-1]):
+        return False
+    last = members[-1]
+    if len(last["body"]) < 0x4C:
+        return False
+    return any(_ecoff_filehdr_ok(m["body"]) for m in members[1:])
+
+
+def _ecoff_filehdr_ok(body: bytes) -> bool:
+    """True if *body* starts with a MIPS ECOFF filehdr that is self-consistent.
+
+    Only the filehdr FIELDS are judged: the held archives are cut inside their
+    last member, so a section table that reaches past the available bytes is the
+    truncation, not a defect. The magic, the section count and the optional-header
+    size are what the member declares about itself.
+    """
+    if len(body) < 20 or int.from_bytes(body[0:2], 'big') not in _ECOFF_MAGICS:
+        return False
+    nscns = int.from_bytes(body[2:4], 'big')
+    opthdr = int.from_bytes(body[16:18], 'big')
+    return 1 <= nscns <= 30 and opthdr in (0, 0x38)
+
+
 def detect_prom_format(data: bytes) -> str:
     """Return the firmware format of *data* (one of the ``FORMAT_*`` constants).
 
@@ -921,12 +1310,20 @@ def detect_prom_format(data: bytes) -> str:
         return FORMAT_UCODE_OBJECT
     if is_gr2_microcode(data):
         return FORMAT_GR2_MICROCODE
+    if is_mips_ecoff(data):
+        return FORMAT_MIPS_ECOFF
     if is_ge_object(data):
         return FORMAT_GE_OBJECT
     if is_vof_timing(data):
         return FORMAT_VOF_TIMING
     if is_m68k_module(data):
         return FORMAT_M68K_MODULE
+    if is_prom_11ee_table(data):
+        return FORMAT_PROM_11EE_TABLE
+    if is_prom_11ee_code(data):
+        return FORMAT_PROM_11EE_CODE
+    if is_mips_ar_archive(data):
+        return FORMAT_MIPS_AR_ARCHIVE
 
     if is_spd_eeprom(data):
         return FORMAT_SPD_EEPROM
