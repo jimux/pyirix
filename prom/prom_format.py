@@ -384,19 +384,13 @@ def vfc_database_record_table(data: bytes) -> tuple:
     return recs, end
 
 
-def parse_vfc_database(data: bytes) -> Optional[dict]:
-    """Decode a VideoFormatCompiler ('sdb ') database container, or None.
+def _vfc_container_and_table(data: bytes) -> Optional[tuple]:
+    """Validate the container and return ``(info, records)``, or None.
 
-    Every condition is a field of the container checked against the file's own
-    bytes -- there is no string search and no filename in it:
-
-      * the length-prefixed fourcc at 0 (u32 4 then ``"sdb "``);
-      * the two header words at 0x08/0x0c (reserved 0, version 1);
-      * the flag pair at 0x10/0x14, one of the two measured flavours;
-      * a length-prefixed producer record at 0x18/0x1c: printable, NUL-padded
-        to its declared length, and at least 8 characters;
-      * the trailing record table, which must contain exactly the declared
-        number of records and close exactly on the declared end.
+    The single code path behind :func:`parse_vfc_database` and
+    :func:`parse_vfc_fields`: one validation, one walk, so the container's own
+    record-count check means the same thing to the decoder as to the detector. If
+    the two ever walked separately they could disagree about a file that passes.
     """
     n = len(data)
     if n < 0x100:
@@ -427,13 +421,185 @@ def parse_vfc_database(data: bytes) -> Optional[dict]:
     recs, stop = walked
     if len(recs) != count or stop != table_end + 4:
         return None
-    return {"flavour": flavour, "producer": producer.decode('ascii'),
-            "records": len(recs), "table_end": table_end}
+    return ({"flavour": flavour, "producer": producer.decode('ascii'),
+             "records": len(recs), "table_end": table_end}, recs)
+
+
+def parse_vfc_database(data: bytes) -> Optional[dict]:
+    """Decode a VideoFormatCompiler ('sdb ') database container, or None.
+
+    Every condition is a field of the container checked against the file's own
+    bytes -- there is no string search and no filename in it:
+
+      * the length-prefixed fourcc at 0 (u32 4 then ``"sdb "``);
+      * the two header words at 0x08/0x0c (reserved 0, version 1);
+      * the flag pair at 0x10/0x14, one of the two measured flavours;
+      * a length-prefixed producer record at 0x18/0x1c: printable, NUL-padded
+        to its declared length, and at least 8 characters;
+      * the trailing record table, which must contain exactly the declared
+        number of records and close exactly on the declared end.
+    """
+    got = _vfc_container_and_table(data)
+    return None if got is None else got[0]
 
 
 def is_vfc_database(data: bytes) -> bool:
     """True if *data* is a VideoFormatCompiler database ('sdb ' container)."""
     return parse_vfc_database(data) is not None
+
+
+#: Type code -> element width in bytes for the types whose element type the
+#: corpus establishes. Type 15 is a length-prefixed string and has no fixed
+#: element width; a type absent from this table is returned raw, never guessed.
+VFC_TYPE_WIDTHS = {2: 4, 7: 4, 10: 4, 16: 4, 17: 8}
+VFC_TYPE_STRING = 15
+
+
+@dataclass(frozen=True)
+class VfcField:
+    """One decoded field of a ``vfc-database`` record table.
+
+    ``offset`` is the record's own ``length`` word: where its data lives in the
+    file, not where its record lives in the table. ``width`` is the number of
+    bytes the decode consumed there and ``count`` the number of elements (1 for a
+    scalar, 0 when the field was not decoded). ``value`` is the typed value for a
+    decoded field, and the raw bytes for one whose declared type or width the
+    file's own layout does not establish -- :attr:`decoded` tells the two apart,
+    so a caller can never mistake raw bytes for a number.
+    """
+
+    name: str
+    type: int
+    mid: int
+    offset: int
+    width: int
+    count: int
+    value: object
+
+    @property
+    def decoded(self) -> bool:
+        """True if :attr:`value` is a typed value rather than raw bytes."""
+        return self.count > 0
+
+
+def _vfc_data_extents(records: list) -> dict:
+    """``{offset: byte length}`` for every data offset in the record table.
+
+    The layout is measured, not assumed: each data item runs from its own
+    ``length`` word to the next item's, and the last one to the first record of
+    the table. So the extent is the file's own statement of how wide the item is,
+    which is what a decode is checked against -- a declared width that disagrees
+    with it is returned raw rather than truncated or over-read.
+    """
+    offsets = sorted({r[4] for r in records})
+    table_start = records[0][0]
+    out = {}
+    for i, off in enumerate(offsets):
+        nxt = offsets[i + 1] if i + 1 < len(offsets) else table_start
+        out[off] = nxt - off
+    return out
+
+
+def _vfc_decode(typ: int, mid: int, data: bytes, offset: int,
+                avail: int) -> Optional[tuple]:
+    """``(value, width, count)`` for one record, or None if it does not decode.
+
+    The rules, all measured over the 3,083 records of the 32 held files:
+
+      * type 15 -- ``u32 len`` then ``len`` printable ASCII bytes (``len == 0``
+        is a real empty string: the four ``.cmb`` files carry five of them);
+      * types 2/7/10/16/17 -- ``mid`` is the element count: 0 means the field is a
+        single scalar of the type's width (so ``MajorVersion``, type 7 mid 0, is
+        one u32), and ``mid >= 1`` means ``u32 count`` (equal to ``mid`` on every
+        measured record) followed by ``count`` elements of that width
+        (u32/u32/u32/float/double).
+
+    The layout check is an upper bound, not an equality: a data item never
+    overlaps the next one, so ``offset + width <= extent``. It is not an
+    equality because the gaps are real -- ``FormatInfo_F_0_V_FrontPorch`` is one
+    u32 with 8 bytes before the next item, and a ``VCHardwareName`` string is 18
+    bytes in a 20-byte slot. A declared width that does not fit its extent means
+    the rule is not this record's layout, so the answer is None and the caller
+    keeps the raw bytes.
+    """
+    if typ == VFC_TYPE_STRING:
+        if avail < 4:
+            return None
+        length = _word(data, offset)
+        if 4 + length > avail or offset + 4 + length > len(data):
+            return None
+        text = data[offset + 4:offset + 4 + length]
+        if not all(32 <= c < 127 for c in text):
+            return None
+        return text.decode('ascii'), 4 + length, 1
+    elem = VFC_TYPE_WIDTHS.get(typ)
+    if elem is None:
+        return None
+    if mid:
+        if avail < 4:
+            return None
+        count = _word(data, offset)
+        if count < 1 or count != mid:
+            return None
+        width = 4 + count * elem
+        if width > avail or offset + width > len(data):
+            return None
+        body = data[offset + 4:offset + width]
+        if typ == 17:
+            values = list(struct.unpack('>%dd' % count, body))
+        elif typ == 16:
+            values = list(struct.unpack('>%df' % count, body))
+        else:
+            values = list(struct.unpack('>%dI' % count, body))
+        return values, width, count
+    if elem > avail or offset + elem > len(data):
+        return None
+    body = data[offset:offset + elem]
+    if typ == 17:
+        return struct.unpack('>d', body)[0], avail, 1
+    if typ == 16:
+        return struct.unpack('>f', body)[0], avail, 1
+    return int.from_bytes(body, 'big'), avail, 1
+
+
+def parse_vfc_fields(data: bytes) -> Optional[dict]:
+    """Decode a ``vfc-database`` container's field table, or None if not one.
+
+    The same validation and the same record-table walk as
+    :func:`parse_vfc_database` -- one code path, so the container's own declared
+    record count means the same thing to the reader as to the detector.
+
+    Returns ``{"flavour", "producer", "records", "table_end", "fields",
+    "values"}``: ``fields`` maps each field name to its
+    :class:`VfcField` (type, ``mid``, data offset, width, count, value) and
+    ``values`` maps the same names to their values alone. A field whose declared
+    type or width the file's own layout does not establish is returned with its
+    raw bytes and its type code (``VfcField.decoded`` is False), never with a
+    guessed width. Field names are unique over all 32 held files; were a file to
+    repeat one, the first occurrence is kept.
+    """
+    got = _vfc_container_and_table(data)
+    if got is None:
+        return None
+    info, records = got
+    extents = _vfc_data_extents(records)
+    fields = {}
+    for _start, raw_name, typ, mid, offset in records:
+        name = raw_name.decode('latin1')
+        if name in fields:
+            continue
+        avail = extents.get(offset, 0)
+        decoded = _vfc_decode(typ, mid, data, offset, avail) if avail else None
+        if decoded is None:
+            fields[name] = VfcField(name, typ, mid, offset, 0, 0,
+                                    data[offset:offset + avail])
+        else:
+            value, width, count = decoded
+            fields[name] = VfcField(name, typ, mid, offset, width, count, value)
+    return {"flavour": info["flavour"], "producer": info["producer"],
+            "records": info["records"], "table_end": info["table_end"],
+            "fields": fields,
+            "values": {name: f.value for name, f in fields.items()}}
 
 
 #: JEDEC SPD DRAM device-type codes (byte 2): FPM/EDO/PSDRAM/SDRAM families.
