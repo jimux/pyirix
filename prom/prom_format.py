@@ -41,6 +41,8 @@ FORMAT_PROM_11EE_TABLE = "prom-11ee-table"  # 0x000011ee@0 + (j,nop) entry table
 FORMAT_PROM_11EE_CODE = "prom-11ee-code"    # 0x000011ee@0 + MIPS code at +0x20
 FORMAT_MIPS_AR_ARCHIVE = "mips-ar-archive"  # !<arch> EB symbol index + ECOFF member
 FORMAT_MIPS_ECOFF = "mips-ecoff"       # MIPS ECOFF object, 2+ loaded segments
+FORMAT_DG2_VDRC_CONTAINER = "dg2-vdrc-container"  # 128 KiB framed bit-stream
+FORMAT_GR2_TIMING_TABLE = "gr2-timing-table"  # 2176 B, 3 timed records + raster
 FORMAT_IO4_JFK4 = "io4-jfk4"           # "JFK4"@0: flat MIPS w/ 0x18 header
 FORMAT_IO4_JKSW = "io4-jksw"           # "JKSW"@0: Everest segment table
 FORMAT_MIPS_VECTOR = "mips-vector"     # classic SGI CPU PROM (IP4..IP30)
@@ -84,6 +86,8 @@ NON_MIPS_FORMATS = frozenset({
     FORMAT_PROM_11EE_CODE,
     FORMAT_MIPS_AR_ARCHIVE,
     FORMAT_MIPS_ECOFF,
+    FORMAT_DG2_VDRC_CONTAINER,
+    FORMAT_GR2_TIMING_TABLE,
     FORMAT_SPD_EEPROM,
     FORMAT_EEPROM_VPD,
     FORMAT_NVRAM_ENV,
@@ -181,6 +185,10 @@ _DESCRIPTIONS = {
         "MIPS 'ar' archive (EB symbol index + ECOFF member)",
     FORMAT_MIPS_ECOFF:
         "MIPS ECOFF object, loaded sections in 2+ 16 MiB segments",
+    FORMAT_DG2_VDRC_CONTAINER:
+        "DG2 VDRC bit-stream container (128 KiB, lead run + 0xff footer)",
+    FORMAT_GR2_TIMING_TABLE:
+        "GR2 display-timing table (3 timed records + declared raster)",
     FORMAT_IO4_JFK4: "IO4 'JFK4' MIPS image (load 0x81800000, code@0x18)",
     FORMAT_IO4_JKSW: JKSW_DESCRIPTION,
     FORMAT_MIPS_VECTOR: "classic SGI MIPS CPU PROM",
@@ -736,6 +744,158 @@ def is_mips_ecoff(data: bytes) -> bool:
     """
     sections = parse_ecoff_sections(data)
     return sections is not None and len(ecoff_segments(sections)) >= 2
+
+
+#: DG2 VDRC container: a 128 KiB (32768-word, big-endian) image whose content is
+#: framed at the ENDS and is empty in between -- not the per-record geometry
+#: prom-residue looked for, and correctly found none of. Measured over the 50
+#: held ``bins/graphics/re/dg2_vdrc*.u`` images:
+#:
+#:   word 0            a small even lead word, 2..0x400
+#:   words 0..i-1      one contiguous nonzero run, 367..2190 words (the payload)
+#:   words i..32763    unbroken zero fill, at least 30574 words
+#:   words 32764..     a four-word footer: the last is 0x000000ff, none of the
+#:     32767           first three has its top nibble set, one of them is nonzero
+#:
+#: What the lead word and the footer MEAN is NOT established: fourteen numeric
+#: hypotheses (sums, XORs, negations, crc32/adler32, popcounts, byte and run
+#: counts against both the lead and the footer) each matched at most 3 of 50 --
+#: chance. The arm therefore rests on the framing alone, which is what the name
+#: says: a CONTAINER, not a codec. REPORT.md records the refuted hypotheses.
+#:
+#: Neither the size nor the basename is the arm, and both would be wrong:
+#: ``bins/graphics/venice/vs2/dg2_vdrc*.u`` is the same BASENAME at 11426 and
+#: 8645 B and is MIPS ELF (a name-keyed rule would eat it); and the corpus's two
+#: other 131072-byte files, ``4D420_ip15prom.070-040x-008.bin``, are a flat code
+#: image with no lead run and no footer, so they are refused here (a size-keyed
+#: rule would steal them).
+DG2_VDRC_SIZE = 131072
+DG2_VDRC_LEAD_MAX = 0x400
+DG2_VDRC_RUN_MIN = 367
+DG2_VDRC_RUN_MAX = 2190
+
+
+def dg2_vdrc_container(data: bytes):
+    """Decode the DG2 VDRC container framing, or None.
+
+    Returns ``(lead, payload_words, footer)``: the lead word, the number of words
+    in the contiguous nonzero run that starts at word 0 (so the run INCLUDES the
+    lead word), and the footer's first three words. Every condition below is one
+    the 50 held images satisfy and a same-size body with a random tail cannot:
+    the nonzero region is a SINGLE contiguous run, the fill between it and the
+    footer is entirely zero, and the footer's four words have the stated shape.
+    """
+    if len(data) != DG2_VDRC_SIZE:
+        return None
+    words = struct.unpack(">%dI" % (DG2_VDRC_SIZE // 4), data)
+    lead = words[0]
+    if not (1 <= lead <= DG2_VDRC_LEAD_MAX) or lead & 1:
+        return None
+    end = 0
+    while end < len(words) and words[end]:
+        end += 1
+    if not (DG2_VDRC_RUN_MIN <= end <= DG2_VDRC_RUN_MAX):
+        return None
+    if any(words[end:len(words) - 4]):
+        return None
+    footer = words[-4:]
+    if footer[3] != 0xFF:
+        return None
+    if any(w >= 0x10000000 for w in footer[:3]) or not any(footer[:3]):
+        return None
+    return lead, end, footer[:3]
+
+
+def is_dg2_vdrc_container(data: bytes) -> bool:
+    """True if *data* is a DG2 VDRC bit-stream container (128 KiB, framed)."""
+    return dg2_vdrc_container(data) is not None
+
+
+#: GR2 display-timing table: a fixed 2176-byte image of three big-endian
+#: length-prefixed records and a 16-word raster descriptor. Measured over the 17
+#: held ``bins/graphics/gr2/*.u`` images at exactly 2176 B -- a DIFFERENT family
+#: from the 18 ``gr2-microcode`` ECOFF objects, which are 668..2076 B and have a
+#: section table instead of a record table:
+#:
+#:   @0x000  u32 L0 (even), L0 bytes of body whose last halfword is 0xffff
+#:   @0x420  u32 0 -- record 0's block ends here, so 4 + L0 <= 0x420
+#:   @0x424  u32 L1 (even), L1 bytes of body ending 0xffff; 0x428 + L1 <= 0x7e0
+#:   @0x7e0  u32 L2 (even), L2 bytes of body ending 0xffff; 0x7e4 + L2 <= 0x840
+#:   @0x840  16 u32: words 0/1 zero, word 2 a small id 1..8, words 3 and 7 carry
+#:           0xc4 in their top byte, words 8/9 the htotal/vtotal raster (each
+#:           0x100..0x1000) that the image DECLARES about itself
+#:
+#: The LENGTH INCLUDES the trailing 0xffff halfword: the smallest held record is
+#: L=2 whose whole body is ``ffff``, and no file has a separate terminator word
+#: outside the length. The framing is read that way because that is what the
+#: bytes say; the brief read the terminator one word late.
+#:
+#: A minimal record MUST be accepted. L1 and L2 are 2 in five held files
+#: (iris3k, presenter, ntsc, pal, pal_b5ac43fc) -- a 2-byte body is a legitimate
+#: "no data, only the terminator" record. A rule demanding a substantial body
+#: would drop exactly those five, so the threshold is not tuned to fit them; it
+#: admits the format's own minimum.
+GR2_TIMING_SIZE = 2176
+GR2_TIMING_DESC_OFF = 0x840
+#: (length offset, block limit) per record: each record closes inside its own
+#: block, before the next length word or the descriptor block.
+GR2_TIMING_RECORDS = ((0x000, 0x420), (0x424, 0x7E0), (0x7E0, 0x840))
+
+
+def gr2_timing_records(data: bytes):
+    """Decode a GR2 timing table's three records, or None.
+
+    Returns ``[(offset, length), ...]``. A record holds when its length is even,
+    at least 2, fits inside its own block, and its body's last halfword is
+    0xffff. The zero word at 0x420 is what makes that offset a boundary rather
+    than an arbitrary one, and it is checked here.
+    """
+    if len(data) != GR2_TIMING_SIZE:
+        return None
+    if int.from_bytes(data[0x420:0x424], 'big') != 0:
+        return None
+    out = []
+    for off, limit in GR2_TIMING_RECORDS:
+        length = int.from_bytes(data[off:off + 4], 'big')
+        if length < 2 or length & 1 or off + 4 + length > limit:
+            return None
+        if data[off + 2 + length:off + 4 + length] != b'\xff\xff':
+            return None
+        out.append((off, length))
+    return out
+
+
+def gr2_timing_descriptor(data: bytes):
+    """Decode the 16-word raster descriptor at 0x840, or None.
+
+    Returns ``(id, htotal, vtotal)``. The descriptor is not decorative: words 8/9
+    are the raster the file is FOR -- 1280x1024 for 30/48/50/60/72 Hz, ccir50/60
+    and st492, 1280x960 for rs343a, 1025x768 for iris3k and presenter, 640x485
+    for ntsc and 780x575 for pal. Checking them checks the image's own
+    declaration, which is evidence; the filename is never consulted.
+    """
+    if len(data) != GR2_TIMING_SIZE:
+        return None
+    words = struct.unpack(">16I", data[GR2_TIMING_DESC_OFF:GR2_TIMING_DESC_OFF + 64])
+    if words[0] or words[1] or not (1 <= words[2] <= 8):
+        return None
+    if (words[3] >> 24) != 0xC4 or (words[7] >> 24) != 0xC4:
+        return None
+    if not (0x100 <= words[8] <= 0x1000 and 0x100 <= words[9] <= 0x1000):
+        return None
+    return words[2], words[8], words[9]
+
+
+def is_gr2_timing_table(data: bytes) -> bool:
+    """True if *data* is a GR2 display-timing table (2176 B, records + raster).
+
+    Distinct from :func:`is_gr2_microcode` by construction: that arm needs a MIPS
+    ECOFF section table, this one needs three length-prefixed 0xffff-terminated
+    records and a raster descriptor, and one 2176-byte body cannot be both. The
+    18 ``gr2-microcode`` rows keep their verdict.
+    """
+    return (gr2_timing_records(data) is not None
+            and gr2_timing_descriptor(data) is not None)
 
 
 #: SGI graphics-microcode OBJECT (the 'µasm' / 'vidasm' / 'vofc' output format).
@@ -1324,6 +1484,10 @@ def detect_prom_format(data: bytes) -> str:
         return FORMAT_PROM_11EE_CODE
     if is_mips_ar_archive(data):
         return FORMAT_MIPS_AR_ARCHIVE
+    if is_dg2_vdrc_container(data):
+        return FORMAT_DG2_VDRC_CONTAINER
+    if is_gr2_timing_table(data):
+        return FORMAT_GR2_TIMING_TABLE
 
     if is_spd_eeprom(data):
         return FORMAT_SPD_EEPROM
