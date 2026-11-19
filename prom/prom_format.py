@@ -36,6 +36,7 @@ FORMAT_GE11_MICROCODE = "ge11-microcode"  # 12-byte ge_ucode records (GE11/Impac
 FORMAT_UCODE_OBJECT = "ucode-object"   # 'E'|tag @0 + a section table closing at EOF
 FORMAT_GE_OBJECT = "ge-object"         # 0x014d0003 @0, .text/.data/.bss table
 FORMAT_VOF_TIMING = "vof-timing"       # 0x77229966 @0, VOF timing block
+FORMAT_VFC_DATABASE = "vfc-database"   # 0x4 'sdb ' @0, VideoFormatCompiler database
 FORMAT_M68K_MODULE = "m68k-module"     # 0x00000107 @0 + self-relative 68K code
 FORMAT_PROM_11EE_TABLE = "prom-11ee-table"  # 0x000011ee@0 + (j,nop) entry table
 FORMAT_PROM_11EE_CODE = "prom-11ee-code"    # 0x000011ee@0 + MIPS code at +0x20
@@ -79,6 +80,7 @@ NON_MIPS_FORMATS = frozenset({
     FORMAT_UCODE_OBJECT,
     FORMAT_GE_OBJECT,
     FORMAT_VOF_TIMING,
+    FORMAT_VFC_DATABASE,
     FORMAT_M68K_MODULE,
     FORMAT_PROM_11EE_TABLE,
     FORMAT_PROM_11EE_CODE,
@@ -172,6 +174,8 @@ _DESCRIPTIONS = {
     FORMAT_UCODE_OBJECT: "SGI graphics-microcode object ('E'|tag + section table)",
     FORMAT_GE_OBJECT: "GE microcode object (0x014d0003, .text/.data/.bss table)",
     FORMAT_VOF_TIMING: "VOF display-timing block (0x77229966)",
+    FORMAT_VFC_DATABASE:
+        "VideoFormatCompiler database ('sdb ' container: timing/format table)",
     FORMAT_M68K_MODULE: "68K graphics microcode module (0x00000107)",
     FORMAT_PROM_11EE_TABLE:
         "graphics PROM, 0x000011ee header + (j,nop) entry table",
@@ -304,6 +308,132 @@ def is_text_image(data: bytes) -> bool:
         return False
     printable = sum(1 for b in data if 9 <= b <= 13 or 32 <= b <= 126)
     return printable / len(data) >= 0.90
+
+
+# --- VideoFormatCompiler database ('sdb ' container) -------------------------
+# One container, three extensions in PROM_library: `.sdb` (26), `.cmb` (4, the
+# Kona combination files) and `.vfo` (2, ShotMaker video timing). The extension is
+# therefore not the name and is not part of the test; the container says what it
+# is. Measured on all 32 files:
+#
+#   @0x00  u32 4            length prefix covering the fourcc that follows
+#   @0x04  "sdb "           the fourcc
+#   @0x08  u32 0            reserved
+#   @0x0c  u32 1            version
+#   @0x10  u32 flags        (0,1) = VideoFormatCompiler .sdb/.vfo,
+#   @0x14  u32 flags        (1,0) = Kona video format combination (.cmb)
+#   @0x18  u32 producerLen  byte length of the producer record that follows
+#   @0x1c  char[producerLen] the producer: "VideoFormatCompiler" (28),
+#                            "Kona video format combination file" (4)
+#   @0x80  u32 recordCount  size of the trailing record table
+#   @0x88  u32 tableEnd     (the table's first record starts at tableEnd + 4)
+#   tail   recordCount records, walked BACKWARDS from EOF -- each is
+#          nameLen, name[nameLen] padded to 4, type, mid, length (all u32) --
+#          and the walk must stop exactly on tableEnd + 4.
+VFC_LENGTH_PREFIX = 4
+VFC_FOURCC = b'sdb '
+VFC_PRODUCER_OFFSET = 0x18       # the u32 length; the string follows at 0x1c
+VFC_PRODUCER_LEN_OFFSET = 0x18
+VFC_PRODUCER_OFFSET_TEXT = 0x1C
+VFC_PRODUCER_MAX = 0x100
+VFC_RECORD_COUNT_OFFSET = 0x80
+VFC_TABLE_END_OFFSET = 0x88
+#: The two measured (flags@0x10, flags@0x14) pairs, by what they select.
+VFC_FLAVOURS = {(0, 1): "videoformatcompiler", (1, 0): "kona-combination"}
+
+
+def vfc_database_record_table(data: bytes) -> tuple:
+    """Walk the tail record table BACKWARDS from EOF.
+
+    Returns ``(records, stop)``: ``[(offset, name, type, mid, length)]`` in file
+    order and the offset the walk stopped at (0 if it ran off the front). The walk is
+    the container's own claim being checked against its bytes: each record's
+    ``nameLen`` must be the word at the record's start, the name must be
+    identifier-like and the padding after it zero, and the whole table must close
+    exactly at the declared end (:data:`VFC_TABLE_END_OFFSET`). Measured on the
+    32 held files: 58-182 records each, every name a C identifier (2,698 records,
+    no exception), every table closing on its declared end.
+    """
+    n = len(data)
+    end = n
+    recs = []
+    while end - 16 >= 0:
+        found = None
+        for name_len in range(1, 64):
+            pad = (name_len + 3) & ~3
+            start = end - 12 - pad - 4
+            if start < 0:
+                break
+            if _word(data, start) != name_len:
+                continue
+            name = data[start + 4:start + 4 + name_len]
+            if not name or not (name[0:1].isalpha() or name[0:1] == b'_'):
+                continue
+            if not all(32 <= c < 127 for c in name):
+                continue
+            if any(data[start + 4 + name_len:start + 4 + pad]):
+                continue
+            found = (start, name, _word(data, end - 12), _word(data, end - 8),
+                     _word(data, end - 4))
+            break
+        if found is None:
+            break
+        recs.append(found)
+        end = found[0]
+    recs.reverse()
+    return recs, end
+
+
+def parse_vfc_database(data: bytes) -> Optional[dict]:
+    """Decode a VideoFormatCompiler ('sdb ') database container, or None.
+
+    Every condition is a field of the container checked against the file's own
+    bytes -- there is no string search and no filename in it:
+
+      * the length-prefixed fourcc at 0 (u32 4 then ``"sdb "``);
+      * the two header words at 0x08/0x0c (reserved 0, version 1);
+      * the flag pair at 0x10/0x14, one of the two measured flavours;
+      * a length-prefixed producer record at 0x18/0x1c: printable, NUL-padded
+        to its declared length, and at least 8 characters;
+      * the trailing record table, which must contain exactly the declared
+        number of records and close exactly on the declared end.
+    """
+    n = len(data)
+    if n < 0x100:
+        return None
+    if _word(data, 0) != VFC_LENGTH_PREFIX or data[4:8] != VFC_FOURCC:
+        return None
+    if _word(data, 0x08) != 0 or _word(data, 0x0C) != 1:
+        return None
+    flavour = VFC_FLAVOURS.get((_word(data, 0x10), _word(data, 0x14)))
+    if flavour is None:
+        return None
+    producer_len = _word(data, VFC_PRODUCER_LEN_OFFSET)
+    if not 8 <= producer_len <= VFC_PRODUCER_MAX:
+        return None
+    if VFC_PRODUCER_OFFSET_TEXT + producer_len > n:
+        return None
+    raw = data[VFC_PRODUCER_OFFSET_TEXT:VFC_PRODUCER_OFFSET_TEXT + producer_len]
+    producer = raw.split(b'\x00', 1)[0]
+    if len(producer) < 8 or not all(32 <= c < 127 for c in producer):
+        return None
+    if any(raw[len(producer):]):        # the record is NUL-padded, not garbage
+        return None
+    count = _word(data, VFC_RECORD_COUNT_OFFSET)
+    table_end = _word(data, VFC_TABLE_END_OFFSET)
+    if count < 1 or not VFC_PRODUCER_OFFSET_TEXT + producer_len <= table_end < n:
+        return None
+    walked = vfc_database_record_table(data)
+    recs, stop = walked
+    if len(recs) != count or stop != table_end + 4:
+        return None
+    return {"flavour": flavour, "producer": producer.decode('ascii'),
+            "records": len(recs), "table_end": table_end}
+
+
+def is_vfc_database(data: bytes) -> bool:
+    """True if *data* is a VideoFormatCompiler database ('sdb ' container)."""
+    return parse_vfc_database(data) is not None
 
 
 #: JEDEC SPD DRAM device-type codes (byte 2): FPM/EDO/PSDRAM/SDRAM families.
@@ -1298,6 +1428,8 @@ def detect_prom_format(data: bytes) -> str:
     # Graphics-microcode families, from decoded structure. These run before the
     # MIPS-vector fallback because several are small enough to be mistaken for a
     # chip dump by that heuristic and none is a CPU PROM.
+    if is_vfc_database(data):
+        return FORMAT_VFC_DATABASE
     if is_ge11_microcode(data):
         return FORMAT_GE11_MICROCODE
     if is_vpro_microcode(data):
