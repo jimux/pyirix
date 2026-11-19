@@ -17,7 +17,7 @@ disassembly; the loader refuses instead (see
 
 import struct
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 # --- recognised formats -----------------------------------------------------
 FORMAT_SN_CONTAINER = "sn-container"   # JFKSWCSM @0x40 (IP27/IP35/IO6)
@@ -1055,6 +1055,199 @@ def parse_uasm_object(data: bytes):
 def is_uasm_object(data: bytes) -> bool:
     """True if *data* is an SGI ``uasm`` microcode object (0x00030003 + records)."""
     return parse_uasm_object(data) is not None
+
+
+#: The value BOTH held objects give a flat word they do not carry: address word
+#: ``UASM_FLAT_FILL_BASE + flat_word_index``. Measured, not assumed: 745/745
+#: uncarried words on each image, 110 -> 0x83806e and 5119 -> 0x8393ff.
+#:
+#: WHAT IT IS, IS NOT ESTABLISHED. It is not in either file as a big-endian u32
+#: and the byte string ``83 80 00`` does not occur in them at all, so it is a
+#: constant of the assembler's output convention -- a load base, an address-space
+#: base or a sentinel, and this reader does not choose between them.
+UASM_FLAT_FILL_BASE = 0x838000
+
+
+@dataclass
+class UasmBlock:
+    """One block of record 1: its flat-image ``address``, ``length``, and body.
+
+    ``address`` is a byte address in the flat image (always a multiple of 4), so
+    the body's word *i* is flat word ``address // 4 + i``. Each stored word is the
+    flat word shifted left by 8 -- the flat image's own top byte is zero, which is
+    why the transform is reversible; ``residual`` counts stored words whose low
+    byte is NOT zero, i.e. which the shift cannot have produced.
+    """
+    address: int
+    length: int
+    body: bytes
+    residual: int
+
+    def words(self) -> List[int]:
+        """The body as the flat image's own words (``stored >> 8``)."""
+        return [w >> 8 for w in struct.unpack(">%dI" % (self.length // 4), self.body)]
+
+
+@dataclass
+class UasmObject:
+    """A decoded ``uasm`` object: the container records AND the payload.
+
+    ``records``, ``fill_words`` and ``identity`` are the container parse's own
+    answer (:func:`parse_uasm_object`), handed through so a caller sees the same
+    values the detector decided on rather than a second walk's.
+
+    The payload, all of it measured on the two held ``hq3*.u`` images:
+
+    * ``blocks`` -- record 1's block dictionary, ``[(address, length, body)]``
+      with the zero-length terminator INCLUDED (so ``blocks[-1].length == 0``);
+    * ``flat_image`` / ``flat_words`` -- the flat image rebuilt by placing each
+      block's body at its address and filling every word the dictionary does not
+      carry with ``UASM_FLAT_FILL_BASE + index``. ``words`` is the length the
+      CALLER asked for: the object states the region it describes (up to the
+      terminator's address) but not the full image length, so the reader will not
+      invent one;
+    * ``line_table`` -- record 2, ``[(flat_word_index, unit_index, line)]``, one
+      entry per word record 1 carries, with ``unit_index`` into ``unit_names``;
+    * ``unit_names`` -- record 4's 30 NUL-terminated build-provenance paths,
+      which are what record 2's unit index means;
+    * ``string_offsets`` -- record 3's 30 u16 offsets into ``unit_names``.
+
+    ``raw_record2`` and ``raw_record3`` are returned undecoded as well: a later
+    reader that establishes more about them gets the bytes rather than this
+    reader's guess.
+    """
+    records: List[Tuple[int, int]]
+    fill_words: int
+    identity: bytes
+    blocks: List[UasmBlock]
+    words: int
+    flat_words: List[int]
+    flat_image: bytes
+    line_table: List[Tuple[int, int, int]]
+    unit_names: List[str]
+    string_offsets: List[int]
+    raw_record2: bytes
+    raw_record3: bytes
+
+    @property
+    def carried(self) -> List[int]:
+        """The flat word indices record 1 carries, in dictionary order."""
+        out: List[int] = []
+        for b in self.blocks:
+            out.extend(range(b.address // 4, b.address // 4 + b.length // 4))
+        return out
+
+    @property
+    def residual(self) -> int:
+        """Stored words `>> 8` cannot have produced (non-zero low byte), total."""
+        return sum(b.residual for b in self.blocks)
+
+    @property
+    def stated_words(self) -> int:
+        """The flat-image extent the OBJECT states: the terminator's address / 4."""
+        return self.blocks[-1].address // 4
+
+    def named_line_table(self) -> List[Tuple[int, str, int]]:
+        """``line_table`` with the unit index resolved to record 4's path."""
+        return [(i, self.unit_names[u], line) for i, u, line in self.line_table]
+
+
+def _uasm_block_dictionary(body: bytes) -> List[UasmBlock]:
+    """Walk record 1's ``(u32 address, u32 length)`` + body blocks to its terminator.
+
+    The terminator is a block whose length is 0 (its body is empty), and the walk
+    must account for EVERY byte of the record -- a dictionary that does not close
+    is an inconsistent object, not an unestablished width, so it raises.
+    """
+    p, blocks = 0, []
+    while True:
+        if p + 8 > len(body):
+            raise ValueError("uasm object: record 1 ends inside a block header at %#x" % p)
+        address, length = struct.unpack(">II", body[p:p + 8])
+        p += 8
+        if address % 4 or length % 4 or p + length > len(body):
+            raise ValueError("uasm object: record 1 block (%#x, %#x) is not a word-aligned "
+                             "in-bounds body at %#x" % (address, length, p))
+        blob = body[p:p + length]
+        residual = sum(1 for i in range(3, length, 4) if blob[i])
+        blocks.append(UasmBlock(address, length, blob, residual))
+        p += length
+        if length == 0:
+            break
+    if p != len(body):
+        raise ValueError("uasm object: record 1's blocks close at %#x, not at the "
+                         "record's end %#x" % (p, len(body)))
+    return blocks
+
+
+def _uasm_flat(blocks: List[UasmBlock], words: int) -> List[int]:
+    """The flat image: bodies placed by address, every other word the fill."""
+    placed = {}
+    for b in blocks:
+        for i, w in enumerate(b.words()):
+            placed[b.address // 4 + i] = w
+    out = []
+    for i in range(words):
+        if i in placed:
+            out.append(placed[i])
+        else:
+            out.append((UASM_FLAT_FILL_BASE + i) & 0xFFFFFFFF)
+    return out
+
+
+def decode_uasm_object(data: bytes, words: Optional[int] = None):
+    """Decode a ``uasm`` microcode object into its records and its payload.
+
+    Returns a :class:`UasmObject`, or None when *data* is not this format -- the
+    container walk is :func:`parse_uasm_object` and is NOT repeated here, so that
+    the one place that decides "is this a uasm object" stays the one place.
+
+    *words* is the flat image length to rebuild, in 32-bit words. Omitted, it is
+    the extent the object itself states (the terminator block's address / 4,
+    4425 words on the held images); the held ``hq3*.bin`` images are 5120 words,
+    a length the file does NOT state, so a caller that wants to compare against
+    one passes its length rather than letting this reader assume it.
+
+    Raises ``ValueError`` when the bytes ARE this container but a record inside it
+    does not decode (record 1 not closing on its own length, or record 2 not a
+    whole number of 8-byte pairs) -- an inconsistent object, not an unestablished
+    width. Nothing here is guessed: record 3 is returned as the u16 offsets it
+    is, record 2's raw bytes are returned beside the pairs decoded from them, and
+    what a line number or the fill base MEAN is not claimed.
+    """
+    parsed = parse_uasm_object(data)
+    if parsed is None:
+        return None
+    records, fill, ident = parsed
+    blocks = _uasm_block_dictionary(data[records[1][0]:records[1][0] + records[1][1]])
+
+    raw2 = data[records[2][0]:records[2][0] + records[2][1]]
+    if len(raw2) % 8:
+        raise ValueError("uasm object: record 2 is %d B, not a whole number of "
+                         "(u32, u32) pairs" % len(raw2))
+    line_table = []
+    for k in range(len(raw2) // 8):
+        index, attrib = struct.unpack(">II", raw2[8 * k:8 * k + 8])
+        line_table.append((index, attrib & 0xFFFF, attrib >> 16))
+
+    raw3 = data[records[3][0]:records[3][0] + records[3][1]]
+    offsets = list(struct.unpack(">%dH" % (len(raw3) // 2), raw3)) if len(raw3) % 2 == 0 else []
+
+    unit_names = [s.decode("latin-1")
+                  for s in data[records[4][0]:records[4][0] + records[4][1]].split(b"\x00")][:-1]
+
+    n = blocks[-1].address // 4 if words is None else words
+    if n < blocks[-1].address // 4:
+        raise ValueError("uasm object: %d words is less than the %d the dictionary's "
+                         "terminator states" % (n, blocks[-1].address // 4))
+    flat_words = _uasm_flat(blocks, n)
+    return UasmObject(
+        records=records, fill_words=fill, identity=ident, blocks=blocks, words=n,
+        flat_words=flat_words,
+        flat_image=b"".join(w.to_bytes(4, "big") for w in flat_words),
+        line_table=line_table, unit_names=unit_names, string_offsets=offsets,
+        raw_record2=raw2, raw_record3=raw3,
+    )
 
 
 def _ge_object_sections(data: bytes):
