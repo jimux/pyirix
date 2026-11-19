@@ -34,6 +34,7 @@ FORMAT_GR2_MICROCODE = "gr2-microcode" # MIPS ECOFF object, GR2/Express microcod
 FORMAT_VPRO_MICROCODE = "vpro-microcode"  # 12-byte records, bits {0,1,88} reserved (Buzz)
 FORMAT_GE11_MICROCODE = "ge11-microcode"  # 12-byte ge_ucode records (GE11/Impact)
 FORMAT_UCODE_OBJECT = "ucode-object"   # 'E'|tag @0 + a section table closing at EOF
+FORMAT_UASM_OBJECT = "uasm-object"     # 0x00030003@0 + 5 records + 0xbeefdead table
 FORMAT_GE_OBJECT = "ge-object"         # 0x014d0003 @0, .text/.data/.bss table
 FORMAT_VOF_TIMING = "vof-timing"       # 0x77229966 @0, VOF timing block
 FORMAT_VFC_DATABASE = "vfc-database"   # 0x4 'sdb ' @0, VideoFormatCompiler database
@@ -80,6 +81,7 @@ NON_MIPS_FORMATS = frozenset({
     FORMAT_VPRO_MICROCODE,
     FORMAT_GE11_MICROCODE,
     FORMAT_UCODE_OBJECT,
+    FORMAT_UASM_OBJECT,
     FORMAT_GE_OBJECT,
     FORMAT_VOF_TIMING,
     FORMAT_VFC_DATABASE,
@@ -176,6 +178,8 @@ _DESCRIPTIONS = {
     FORMAT_GR2_MICROCODE: "GR2/Express graphics microcode (MIPS ECOFF object)",
     FORMAT_VPRO_MICROCODE: "VPro Buzz transform-engine microcode",
     FORMAT_UCODE_OBJECT: "SGI graphics-microcode object ('E'|tag + section table)",
+    FORMAT_UASM_OBJECT:
+        "SGI uasm microcode object (0x00030003 + 5 chained records, 0xbeefdead table)",
     FORMAT_GE_OBJECT: "GE microcode object (0x014d0003, .text/.data/.bss table)",
     FORMAT_VOF_TIMING: "VOF display-timing block (0x77229966)",
     FORMAT_VFC_DATABASE:
@@ -1037,6 +1041,30 @@ def is_gr2_timing_table(data: bytes) -> bool:
 _UCODE_OBJECT_HDR = {1: 20, 3: 44}
 
 
+def _walk_record_chain(pairs, n: int, first_off: int, pad: int):
+    """Return *pairs* if they are a valid end-to-start record chain, else None.
+
+    Shared by every SGI microcode object whose header is a list of
+    ``(file offset, byte length)`` records: the records must be positive and in
+    bounds, each must start exactly where the previous one ended, the first must
+    start at *first_off* (the header's own end), and the last must close on EOF
+    within *pad* bytes. The two families differ in their header layout, magic and
+    table placement, not in this walk -- so this is one walk, not two copies.
+    """
+    last_end = None
+    for off, length in pairs:
+        if off <= 0 or length <= 0 or off + length > n:
+            return None
+        if last_end is not None and off != last_end:
+            return None
+        last_end = off + length
+    if first_off and pairs[0][0] != first_off:
+        return None
+    if not 0 <= n - last_end <= pad:
+        return None
+    return pairs
+
+
 def parse_ucode_object(data: bytes):
     """Decode the section table of an SGI graphics-microcode object, or None.
 
@@ -1063,14 +1091,10 @@ def parse_ucode_object(data: bytes):
         length = int.from_bytes(data[8 + 8 * i:12 + 8 * i], 'big')
         if (off, length) == (0, 0):
             break
-        if off <= 0 or length <= 0 or off + length > n:
-            return None
-        if sections and off != sections[-1][0] + sections[-1][1]:
-            return None
         sections.append((off, length))
-    if len(sections) < 2 or sections[0][0] != hdr:
+    if len(sections) < 2:
         return None
-    if not 0 <= n - (sections[-1][0] + sections[-1][1]) <= 3:
+    if _walk_record_chain(sections, n, hdr, 3) is None:
         return None
     ident = data[sections[0][0]:sections[0][0] + sections[0][1]]
     if not ident:
@@ -1086,6 +1110,81 @@ def parse_ucode_object(data: bytes):
 def is_ucode_object(data: bytes) -> bool:
     """True if *data* is an SGI graphics-microcode object ('E'|tag container)."""
     return parse_ucode_object(data) is not None
+
+
+#: SGI ``uasm`` microcode OBJECT -- the other graphics-microcode object format,
+#: and a DIFFERENT one from the ``E``-tag family above. Measured on the two held
+#: ``bins/graphics/impact/hq/hq3*.u`` images (56677 B each, the only two corpus
+#: files with this magic out of 1073):
+#:
+#:   @0x000  u32 0x00030003
+#:   @0x004  5 x (u32 file offset, u32 byte length) -- 40 bytes, ending at 0x02c
+#:   @0x02c  512 u32 WORDS of a table, 0x800 bytes, whose TAIL is the sentinel
+#:           fill 0xbeefdead (248 of 512 words in both held images) and whose
+#:           used head carries none of it
+#:   @0x82c  the five records, CHAINED end-to-start, the last closing on EOF
+#:           exactly (no padding): identity string, code, one undecoded record,
+#:           a u16 string-offset table, and the build-provenance path list
+#:
+#: The records are walked by the SAME ``_walk_record_chain`` the ``E`` family
+#: uses -- same idea (a record table that chains to EOF), different magic,
+#: different header size and a sentinel-filled word table this family has and the
+#: ``E`` family does not. The sentinel tail is what makes the fixed 0x800-byte
+#: table a boundary rather than a magic-derived constant: the first record starts
+#: exactly where the table ends (44 + 512*4 = 0x82c).
+#:
+#: NOT LOADABLE, and measured to be so: this is toolchain output for the HQ3
+#: graphics command processor, not a MIPS CPU PROM. ``extract_prom_code`` must
+#: refuse it (it joins ``NON_MIPS_FORMATS``); naming the object is not a licence
+#: to disassemble the code record as MIPS.
+UASM_OBJECT_MAGIC = 0x00030003
+UASM_OBJECT_RECORDS = 5
+UASM_OBJECT_TABLE_OFF = 44
+UASM_OBJECT_TABLE_WORDS = 512
+UASM_OBJECT_FILL = 0xBEEFDEAD
+
+
+def parse_uasm_object(data: bytes):
+    """Decode a ``uasm`` microcode object's record table, or None.
+
+    Returns ``(records, fill_words, identity)``: the five ``(offset, length)``
+    records in file order, how many trailing words of the 512-word table carry
+    the sentinel fill, and record 0's text. Every condition is one the held
+    images satisfy and a same-size near-miss with a random tail cannot: the five
+    records CHAIN end-to-start from the table's end and close on EOF exactly, the
+    table's used head carries no sentinel word while a non-empty tail is solid
+    fill, and record 0 starts with the producer's own name.
+    """
+    n = len(data)
+    if n < UASM_OBJECT_TABLE_OFF + 4 * UASM_OBJECT_TABLE_WORDS + 8:
+        return None
+    if int.from_bytes(data[0:4], 'big') != UASM_OBJECT_MAGIC:
+        return None
+    records = []
+    for i in range(UASM_OBJECT_RECORDS):
+        off, length = struct.unpack(">II", data[4 + 8 * i:12 + 8 * i])
+        records.append((off, length))
+    table_end = UASM_OBJECT_TABLE_OFF + 4 * UASM_OBJECT_TABLE_WORDS
+    if _walk_record_chain(records, n, table_end, 0) is None:
+        return None
+    table = struct.unpack(">%dI" % UASM_OBJECT_TABLE_WORDS,
+                          data[UASM_OBJECT_TABLE_OFF:table_end])
+    fill = 0
+    while fill < UASM_OBJECT_TABLE_WORDS and \
+            table[UASM_OBJECT_TABLE_WORDS - 1 - fill] == UASM_OBJECT_FILL:
+        fill += 1
+    head = table[:UASM_OBJECT_TABLE_WORDS - fill]
+    if fill == 0 or not head or any(w == UASM_OBJECT_FILL for w in head):
+        return None
+    ident = data[records[0][0]:records[0][0] + records[0][1]]
+    if not ident.startswith(b"uasm "):
+        return None
+    return records, fill, ident
+
+
+def is_uasm_object(data: bytes) -> bool:
+    """True if *data* is an SGI ``uasm`` microcode object (0x00030003 + records)."""
+    return parse_uasm_object(data) is not None
 
 
 def _ge_object_sections(data: bytes):
@@ -1600,6 +1699,8 @@ def detect_prom_format(data: bytes) -> str:
         return FORMAT_GE7_MICROCODE
     if is_ucode_object(data):
         return FORMAT_UCODE_OBJECT
+    if is_uasm_object(data):
+        return FORMAT_UASM_OBJECT
     if is_gr2_microcode(data):
         return FORMAT_GR2_MICROCODE
     if is_mips_ecoff(data):
