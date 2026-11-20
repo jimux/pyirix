@@ -49,6 +49,7 @@ FORMAT_IO4_JFK4 = "io4-jfk4"           # "JFK4"@0: flat MIPS w/ 0x18 header
 FORMAT_IO4_JKSW = "io4-jksw"           # "JKSW"@0: Everest segment table
 FORMAT_MIPS_VECTOR = "mips-vector"     # classic SGI CPU PROM (IP4..IP30)
 FORMAT_MIPS_VECTOR_SWAPPED = "mips-vector-swapped"  # same, raw flash word-swapped
+FORMAT_IRIS_LANE_BANK = "iris-lane-bank"  # one byte lane of a MIPS PROM (4 chips)
 
 # Minimum size for a classic (non-swapped) MIPS vector PROM. A real one is at
 # least tens of KiB; below this a first-word-only match is a chip dump, not a
@@ -96,6 +97,7 @@ NON_MIPS_FORMATS = frozenset({
     FORMAT_EEPROM_VPD,
     FORMAT_NVRAM_ENV,
     FORMAT_TEXT,
+    FORMAT_IRIS_LANE_BANK,
     FORMAT_UNKNOWN,
 })
 
@@ -202,6 +204,8 @@ _DESCRIPTIONS = {
     FORMAT_MIPS_VECTOR: "classic SGI MIPS CPU PROM",
     FORMAT_MIPS_VECTOR_SWAPPED:
         "raw-flash SGI MIPS CPU PROM (16-bit word-swapped)",
+    FORMAT_IRIS_LANE_BANK:
+        "Professional IRIS CPU PROM, ONE byte lane of four (070-009x)",
     FORMAT_TEXT: "plain text / data (not firmware)",
     FORMAT_SPD_EEPROM: "JEDEC SDRAM SPD EEPROM (256 B)",
     FORMAT_EEPROM_VPD: "SGI board VPD serial EEPROM (24C04/24C512)",
@@ -307,6 +311,90 @@ def is_swapped_mips_vector(data: bytes) -> bool:
         count += 1
         off += 8
     return count >= 2
+
+
+# --- Professional IRIS CPU PROM: FOUR byte-wide lanes -----------------------
+#
+# A 256 KiB IP4 PROM is physically four 64 KiB 8-bit ROMs; the parallel chips are
+# byte-interleaved into the 32-bit word, so the 070-0093 chip carries byte 0 of
+# every word, 0094 byte 1, 0095 byte 2 and 0096 byte 3:
+#
+#     image[4*i + j] = bank[j][i]     (lane order = part number order)
+#
+# Measured on the corpus: for each of the three revisions 008/009/010, the four
+# 64 KiB parts under bins/unsorted/ interleave BYTE FOR BYTE into
+# bins/{cpu/ip4,unsorted}/Professional_IRIS_ip4prom.070-009x-<rev>.bin, which
+# `detect_prom_format` already names `mips-vector` (3/3 revisions, 12/12 parts,
+# 0 unexplained). So this is not a new image format -- it is the already-named
+# MIPS PROM, split the way the hardware is built.
+#
+# THE EVIDENCE IN ONE CHIP. Every lane carries one byte of each 32-bit word, so it
+# carries one byte of every word the image is made of, in word order. The image
+# opens with the CPU PROM's 65-slot jump table -- 65 `J` words each followed by a
+# zero word -- and a zero word is four zero BYTES, one per lane. Every held lane
+# therefore has a zero byte at the odd index of each of its first 65 8-byte slots
+# (lane 3's slot 0 is 0x00000082: its zero word contributes 0x00 at bytes 1..3 in
+# every other lane, and its own odd bytes 1,3,5..129 are zero too). That run is
+# what the arm reads, and it is unique in the corpus: over all 1074 files of
+# PROM_library -- every size, not only 64 KiB -- exactly the twelve held lanes
+# carry it (measured; see tests/test_prom_format.py).
+#
+# WHAT ONE CHIP CANNOT PROVE, and why the RECONSTRUCTION is required as well: a
+# lane holds ONE byte of the reset word, so it cannot by itself be the evidence
+# that the assembled image is a MIPS PROM. That claim lives in the relation:
+# `iris_lane_image()` assembles the four banks and returns the image only when
+# `detect_prom_format` calls it `mips-vector`. Naming one bank a lane and
+# assembling four of them are one rule, tested together: a single-byte
+# perturbation inside the reset word leaves every lane's structure intact yet
+# stops the reconstruction being `mips-vector`, and the arm refuses that set.
+IRIS_LANE_SIZE = 0x10000          # 64 KiB per chip; four of them make 256 KiB
+IRIS_LANE_COUNT = 4
+IRIS_LANE_SLOTS = 65              # jump-table slots before the first code word
+
+
+def iris_lane_slots(data: bytes) -> int:
+    """Leading 8-byte slots of *data* whose second byte-pair is zero on odd bytes.
+
+    Counts ``k`` while ``data[2*k + 1] == 0``; the lanes of the Professional IRIS
+    PROM reach at least :data:`IRIS_LANE_SLOTS` (65) because the assembled image
+    opens with that many ``J``/zero word pairs. A code-only ROM reaches 0.
+    """
+    slots = 0
+    while 2 * slots + 1 < len(data) and data[2 * slots + 1] == 0:
+        slots += 1
+    return slots
+
+
+def is_iris_lane_bank(data: bytes) -> bool:
+    """True if *data* is one 64 KiB byte lane of a four-chip MIPS CPU PROM.
+
+    The evidence is the lane's share of the image's opening jump table: 64 KiB of
+    data whose odd-index bytes are zero over the first 65 slots (see the block
+    comment above). It is read from the bytes only -- no magic, no filename -- so
+    the arm fires on the same image under any name or extension, and it refuses a
+    lane whose jump-table share is not there.
+    """
+    return len(data) == IRIS_LANE_SIZE and iris_lane_slots(data) >= IRIS_LANE_SLOTS
+
+
+def iris_lane_image(banks) -> Optional[bytes]:
+    """Assemble four 64 KiB byte lanes into the 256 KiB image, or None.
+
+    ``banks`` is in LANE ORDER (byte 0 of every word first). The image is accepted
+    only when every bank is a lane (:func:`is_iris_lane_bank`) AND the assembled
+    256 KiB is what :func:`detect_prom_format` already names ``mips-vector`` --
+    naming the parts is not a licence to call their assembly a PROM the detector
+    would refuse.
+    """
+    banks = list(banks)
+    if len(banks) != IRIS_LANE_COUNT or not all(map(is_iris_lane_bank, banks)):
+        return None
+    n = IRIS_LANE_SIZE
+    out = bytearray(IRIS_LANE_COUNT * n)
+    for j, bank in enumerate(banks):
+        out[j::IRIS_LANE_COUNT] = bank
+    image = bytes(out)
+    return image if detect_prom_format(image) == FORMAT_MIPS_VECTOR else None
 
 
 def is_text_image(data: bytes) -> bool:
@@ -1733,6 +1821,12 @@ def detect_prom_format(data: bytes) -> str:
 
     if is_text_image(data):
         return FORMAT_TEXT
+
+    # A single byte-wide lane of the Professional IRIS CPU PROM (four 64 KiB
+    # chips). Read from the lane's share of the image's opening jump table; the
+    # assembled 256 KiB is named by the mips-vector arm below (iris_lane_image).
+    if is_iris_lane_bank(data):
+        return FORMAT_IRIS_LANE_BANK
 
     if is_mips_vector(data):
         return FORMAT_MIPS_VECTOR
