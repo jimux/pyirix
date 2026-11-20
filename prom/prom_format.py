@@ -35,6 +35,7 @@ FORMAT_VPRO_MICROCODE = "vpro-microcode"  # 12-byte records, bits {0,1,88} reser
 FORMAT_GE11_MICROCODE = "ge11-microcode"  # 12-byte ge_ucode records (GE11/Impact)
 FORMAT_UCODE_OBJECT = "ucode-object"   # 'E'|tag @0 + a section table closing at EOF
 FORMAT_UASM_OBJECT = "uasm-object"     # 0x00030003@0 + 5 records + 0xbeefdead table
+FORMAT_PEAPOD_MICROCODE = "peapod-microcode"  # 'E9' ver 1, hdr 44, PEAPOD identity
 FORMAT_GE_OBJECT = "ge-object"         # 0x014d0003 @0, .text/.data/.bss table
 FORMAT_VOF_TIMING = "vof-timing"       # 0x77229966 @0, VOF timing block
 FORMAT_VFC_DATABASE = "vfc-database"   # 0x4 'sdb ' @0, VideoFormatCompiler database
@@ -82,6 +83,7 @@ NON_MIPS_FORMATS = frozenset({
     FORMAT_GE11_MICROCODE,
     FORMAT_UCODE_OBJECT,
     FORMAT_UASM_OBJECT,
+    FORMAT_PEAPOD_MICROCODE,
     FORMAT_GE_OBJECT,
     FORMAT_VOF_TIMING,
     FORMAT_VFC_DATABASE,
@@ -180,6 +182,8 @@ _DESCRIPTIONS = {
     FORMAT_UCODE_OBJECT: "SGI graphics-microcode object ('E'|tag + section table)",
     FORMAT_UASM_OBJECT:
         "SGI uasm microcode object (0x00030003 + 5 chained records, 0xbeefdead table)",
+    FORMAT_PEAPOD_MICROCODE:
+        "PEAPOD 'pp' graphics/processor microcode ('E9' container, version 1)",
     FORMAT_GE_OBJECT: "GE microcode object (0x014d0003, .text/.data/.bss table)",
     FORMAT_VOF_TIMING: "VOF display-timing block (0x77229966)",
     FORMAT_VFC_DATABASE:
@@ -1041,16 +1045,45 @@ def is_gr2_timing_table(data: bytes) -> bool:
 _UCODE_OBJECT_HDR = {1: 20, 3: 44}
 
 
-def _walk_record_chain(pairs, n: int, first_off: int, pad: int):
+def _record_table(data: bytes, hdr: int):
+    """Read the ``(offset, length)`` slots of an ``E`` container's header.
+
+    The table starts at +4 and holds ``(hdr - 4) // 8`` slots, terminated early
+    by a ``(0, 0)`` slot where the family writes one. Reading the slots is not
+    the walk: what the slots MEAN is decided by ``_walk_record_chain``, which
+    every ``E``-tag family and the ``uasm`` object share.
+    """
+    pairs: List[tuple] = []
+    for i in range((hdr - 4) // 8):
+        off = int.from_bytes(data[4 + 8 * i:8 + 8 * i], 'big')
+        length = int.from_bytes(data[8 + 8 * i:12 + 8 * i], 'big')
+        if (off, length) == (0, 0):
+            break
+        pairs.append((off, length))
+    return pairs
+
+
+def _walk_record_chain(pairs, n: int, first_off: int, pad: int,
+                       stop_when_closed: bool = False):
     """Return *pairs* if they are a valid end-to-start record chain, else None.
 
-    Shared by every SGI microcode object whose header is a list of
-    ``(file offset, byte length)`` records: the records must be positive and in
-    bounds, each must start exactly where the previous one ended, the first must
-    start at *first_off* (the header's own end), and the last must close on EOF
-    within *pad* bytes. The two families differ in their header layout, magic and
-    table placement, not in this walk -- so this is one walk, not two copies.
+    The ONE walk, shared by every SGI microcode object whose header is a list of
+    ``(file offset, byte length)`` records -- the ``E``-tag family
+    (``ucode-object``), the PEAPOD container and the ``uasm`` object. The
+    records must be positive and in bounds, each must start exactly where the
+    previous one ended, the first must start at *first_off* (the header's own
+    end), and the last must close on EOF within *pad* bytes. The families differ
+    in their header layout, magic and table placement, and in the two parameters
+    here, not in this walk.
+
+    ``stop_when_closed`` decides what the slots after the closing record mean:
+    the ``E``-tag family writes a ``(0, 0)`` terminator (or rejects a table that
+    keeps going), while the PEAPOD container fills them with trailer words that
+    are not records at all, so the walk ends at the record that closes on EOF.
     """
+    if len(pairs) < 2:
+        return None
+    walked: List[tuple] = []
     last_end = None
     for off, length in pairs:
         if off <= 0 or length <= 0 or off + length > n:
@@ -1058,11 +1091,14 @@ def _walk_record_chain(pairs, n: int, first_off: int, pad: int):
         if last_end is not None and off != last_end:
             return None
         last_end = off + length
-    if first_off and pairs[0][0] != first_off:
+        walked.append((off, length))
+        if stop_when_closed and 0 <= n - last_end <= pad:
+            break
+    if first_off and walked[0][0] != first_off:
         return None
     if not 0 <= n - last_end <= pad:
         return None
-    return pairs
+    return walked
 
 
 def parse_ucode_object(data: bytes):
@@ -1085,16 +1121,8 @@ def parse_ucode_object(data: bytes):
         return None
     if int.from_bytes(data[4:8], 'big') != hdr:
         return None
-    sections: List[tuple] = []
-    for i in range((hdr - 4) // 8):
-        off = int.from_bytes(data[4 + 8 * i:8 + 8 * i], 'big')
-        length = int.from_bytes(data[8 + 8 * i:12 + 8 * i], 'big')
-        if (off, length) == (0, 0):
-            break
-        sections.append((off, length))
-    if len(sections) < 2:
-        return None
-    if _walk_record_chain(sections, n, hdr, 3) is None:
+    sections = _walk_record_chain(_record_table(data, hdr), n, hdr, 3)
+    if sections is None:
         return None
     ident = data[sections[0][0]:sections[0][0] + sections[0][1]]
     if not ident:
@@ -1185,6 +1213,73 @@ def parse_uasm_object(data: bytes):
 def is_uasm_object(data: bytes) -> bool:
     """True if *data* is an SGI ``uasm`` microcode object (0x00030003 + records)."""
     return parse_uasm_object(data) is not None
+
+
+#: PEAPOD ``pp`` microcode (the ``pp1*``/``pp2*`` images): the same ``E``
+#: container family as ``ucode-object`` but its own tag (0x39) and its own
+#: identity. The section table is the v3 shape (44 bytes = 5 slots) on a v1
+#: word0, and only the FIRST TWO slots are records -- ``(44, 111)`` identity and
+#: ``(155, len-155)`` body, or ``len-156`` where the file carries the 1 byte of
+#: odd-length padding -- with the remaining three slots holding trailer words. ``0x7fffff90`` is the first of those: negative as signed 32-bit, which
+#: is why prom-framing read the family as truncated. It is not a length: the walk
+#: has already closed at EOF by then (9/9 on the corpus), so the arm stops at the
+#: closing record and validates the trailer not at all.
+PEAPOD_IDENTITY = b"PEAPOD 1.2 pp microcode assembler"
+PEAPOD_TAG = 0x39
+PEAPOD_HEADER_LEN = 44
+#: The body is a run of 9-byte instruction records, each terminated by the
+#: PEAPOD end-of-record word 0x10fe in its last two bytes; measured 2673 of 4071
+#: records (`pp1*`) and 2640 of 4042 (`pp2*`), i.e. 65% in both groups, so the
+#: threshold is the measured phase and not a guess.
+PEAPOD_RECORD_SIZE = 9
+PEAPOD_TERMINATOR = b"\x10\xfe"
+PEAPOD_TERMINATOR_PHASE = 0.60
+
+
+def parse_peapod_microcode(data: bytes):
+    """Decode a PEAPOD ``pp`` microcode container, or None.
+
+    Returns ``(sections, identity, body)``. Every acceptance condition is a claim
+    the file makes about itself: the ``E``|tag 0x39|version 1 word, header length
+    44, the record table chained from the header end and its second record closing
+    on EOF (the trailer after it is not a record table), an identity record that
+    carries the producer string ``PEAPOD 1.2 pp microcode assembler``, and a body
+    whose length divides by 9 and whose records end in the 0x10fe terminator as a
+    measured majority. The size floor keeps a header-sized fragment out; the tag
+    alone and the identity alone are never enough.
+    """
+    n = len(data)
+    if n < 1024 or data[0:1] != b'E' or data[1] != PEAPOD_TAG:
+        return None
+    if int.from_bytes(data[2:4], 'big') != 1:
+        return None
+    if int.from_bytes(data[4:8], 'big') != PEAPOD_HEADER_LEN:
+        return None
+    sections = _walk_record_chain(_record_table(data, PEAPOD_HEADER_LEN), n,
+                                  PEAPOD_HEADER_LEN, 3, stop_when_closed=True)
+    if sections is None:
+        return None
+    ident = data[sections[0][0]:sections[0][0] + sections[0][1]]
+    if PEAPOD_IDENTITY not in ident or b"\x00" in ident:
+        return None
+    if any(not (9 <= c < 127) for c in ident):
+        return None
+    body = data[sections[1][0]:sections[1][0] + sections[1][1]]
+    if len(body) < 1000 or len(body) % PEAPOD_RECORD_SIZE:
+        return None
+    records = len(body) // PEAPOD_RECORD_SIZE
+    terminators = sum(
+        1 for i in range(0, len(body), PEAPOD_RECORD_SIZE)
+        if body[i + PEAPOD_RECORD_SIZE - 2:i + PEAPOD_RECORD_SIZE] ==
+        PEAPOD_TERMINATOR)
+    if terminators / records < PEAPOD_TERMINATOR_PHASE:
+        return None
+    return sections, ident, body
+
+
+def is_peapod_microcode(data: bytes) -> bool:
+    """True if *data* is a PEAPOD ``pp`` microcode container ('E', tag 0x39)."""
+    return parse_peapod_microcode(data) is not None
 
 
 def _ge_object_sections(data: bytes):
@@ -1697,6 +1792,8 @@ def detect_prom_format(data: bytes) -> str:
         return FORMAT_HQ3_MICROCODE
     if is_ge7_microcode(data):
         return FORMAT_GE7_MICROCODE
+    if is_peapod_microcode(data):
+        return FORMAT_PEAPOD_MICROCODE
     if is_ucode_object(data):
         return FORMAT_UCODE_OBJECT
     if is_uasm_object(data):
