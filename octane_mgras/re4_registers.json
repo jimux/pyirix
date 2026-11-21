@@ -1,0 +1,2216 @@
+{
+ "schema": "pyirix/octane_mgras/re4_registers.json v2",
+ "golden": "octane-ip30-demos-mgras-perf",
+ "unix_sha256": "62c0379240e0f1ffcb1a8c23ac89dead9d1407bc91b03966a3715bc463cfb2b9",
+ "trace": "trace-hk.trace",
+ "trace_sha256": "eedb71da1eca0ab61132810003184294a96c212ec23c1845fd5d1fa14606ca60",
+ "model_tree": "/home/jimmy/qemu-sgi/qemu-sgi-repo/hw/mips/sgi_octane.c",
+ "model_tree_sha": "6257b2c79233153c7a946ec57e3066b4760d6ce2",
+ "model_state_reader": "tools/model_state.py (all four handler forms)",
+ "attributor": "tools/attr_offsets.py",
+ "registers": [
+  {
+   "offset": "0x11000",
+   "width": 4,
+   "dir": "rw",
+   "traced_writes": 36,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "absent",
+   "model_constants": [],
+   "block": "MGRAS_HQ",
+   "writer_functions": [
+    "MgrasGatherInfo",
+    "MgrasInitHQ",
+    "MgrasCtxsw"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202ae988",
+     "function": "MgrasGatherInfo",
+     "text": "sw a3, 4096(a2)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202af03c",
+     "function": "MgrasInitHQ",
+     "text": "sw a3, 4096(v0)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202bd460",
+     "function": "MgrasCtxsw",
+     "text": "lw a0, 4096(s2)",
+     "provenance": "hwbase",
+     "dir": "r",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202bd4a8",
+     "function": "MgrasCtxsw",
+     "text": "sw v1, 4096(s2)",
+     "provenance": "hwbase",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    }
+   ],
+   "name": "widget +0x11000 written by MgrasGatherInfo [UNNAMED FIELD]",
+   "role": "named_by_accessor",
+   "note": "the kernel accessor MgrasGatherInfo computes widget +0x11000; that pins the function, not the field's meaning"
+  },
+  {
+   "offset": "0x11008",
+   "width": 4,
+   "dir": "rw",
+   "traced_writes": 18,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "absent",
+   "model_constants": [],
+   "block": "MGRAS_HQ",
+   "writer_functions": [
+    "MgrasGatherInfo",
+    "MgrasInitHQ",
+    "MgrasCtxsw"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202ae994",
+     "function": "MgrasGatherInfo",
+     "text": "sw v1, 4104(a2)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202af048",
+     "function": "MgrasInitHQ",
+     "text": "sw t0, 4104(v0)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202bd468",
+     "function": "MgrasCtxsw",
+     "text": "lw at, 4104(s2)",
+     "provenance": "hwbase",
+     "dir": "r",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    }
+   ],
+   "name": "widget +0x11008 written by MgrasGatherInfo [UNNAMED FIELD]",
+   "role": "named_by_accessor",
+   "note": "the kernel accessor MgrasGatherInfo computes widget +0x11008; that pins the function, not the field's meaning"
+  },
+  {
+   "offset": "0x11020",
+   "width": 4,
+   "dir": "r",
+   "traced_writes": 18,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_HQ_FLAG_PRIV_OFF"
+   ],
+   "block": "MGRAS_HQ",
+   "writer_functions": [
+    "MgrasGeneralInterrupt"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202bd924",
+     "function": "MgrasGeneralInterrupt",
+     "text": "lw t0, 4128(s1)",
+     "provenance": "hwbase",
+     "dir": "r",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_HQ_FLAG_PRIV_OFF"
+     ],
+     "handler": "direct: off == MGRAS_HQ_FLAG_PRIV_OFF"
+    }
+   ],
+   "name": "MGRAS_HQ_FLAG_PRIV_OFF",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_HQ_FLAG_PRIV_OFF)"
+  },
+  {
+   "offset": "0x11028",
+   "width": 4,
+   "dir": "w",
+   "traced_writes": 72,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_HQ_FLAG_CLR_PRIV_OFF"
+   ],
+   "block": "MGRAS_HQ",
+   "writer_functions": [
+    "MgrasInitHQ",
+    "MgrasCtxsw",
+    "MgrasGeneralInterrupt"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202af0a0",
+     "function": "MgrasInitHQ",
+     "text": "sw at, 4136(v0)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202bd458",
+     "function": "MgrasCtxsw",
+     "text": "sw v0, 4136(s2)",
+     "provenance": "hwbase",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202bd944",
+     "function": "MgrasGeneralInterrupt",
+     "text": "sw a1, 4136(s1)",
+     "provenance": "hwbase",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_HQ_FLAG_CLR_PRIV_OFF"
+     ],
+     "handler": "direct: off == MGRAS_HQ_FLAG_CLR_PRIV_OFF"
+    }
+   ],
+   "name": "MGRAS_HQ_FLAG_CLR_PRIV_OFF",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_HQ_FLAG_CLR_PRIV_OFF)"
+  },
+  {
+   "offset": "0x11030",
+   "width": 4,
+   "dir": "rw",
+   "traced_writes": 18,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "absent",
+   "model_constants": [],
+   "block": "MGRAS_HQ",
+   "writer_functions": [
+    "MgrasInitHQ",
+    "MgrasCtxsw"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202af0b0",
+     "function": "MgrasInitHQ",
+     "text": "sw v1, 4144(v0)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202bd478",
+     "function": "MgrasCtxsw",
+     "text": "lw a3, 4144(s2)",
+     "provenance": "hwbase",
+     "dir": "r",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    }
+   ],
+   "name": "widget +0x11030 written by MgrasInitHQ [UNNAMED FIELD]",
+   "role": "named_by_accessor",
+   "note": "the kernel accessor MgrasInitHQ computes widget +0x11030; that pins the function, not the field's meaning"
+  },
+  {
+   "offset": "0x11038",
+   "width": 4,
+   "dir": "w",
+   "traced_writes": 18,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "absent",
+   "model_constants": [],
+   "block": "MGRAS_HQ",
+   "writer_functions": [
+    "MgrasInitHQ"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202af0a8",
+     "function": "MgrasInitHQ",
+     "text": "sw at, 4152(v0)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    }
+   ],
+   "name": "widget +0x11038 written by MgrasInitHQ [UNNAMED FIELD]",
+   "role": "named_by_accessor",
+   "note": "the kernel accessor MgrasInitHQ computes widget +0x11038; that pins the function, not the field's meaning"
+  },
+  {
+   "offset": "0x11040",
+   "width": 4,
+   "dir": "r",
+   "traced_writes": 18,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_HQ_INTR_ENAB_OFF"
+   ],
+   "block": "MGRAS_HQ",
+   "writer_functions": [
+    "MgrasCtxsw",
+    "MgrasGeneralInterrupt"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202bd470",
+     "function": "MgrasCtxsw",
+     "text": "lw a4, 4160(s2)",
+     "provenance": "hwbase",
+     "dir": "r",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202bd928",
+     "function": "MgrasGeneralInterrupt",
+     "text": "lw a5, 4160(s1)",
+     "provenance": "hwbase",
+     "dir": "r",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_HQ_INTR_ENAB_OFF"
+     ],
+     "handler": "direct: off == MGRAS_HQ_INTR_ENAB_OFF"
+    }
+   ],
+   "name": "MGRAS_HQ_INTR_ENAB_OFF",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_HQ_INTR_ENAB_OFF)"
+  },
+  {
+   "offset": "0x11048",
+   "width": 4,
+   "dir": "w",
+   "traced_writes": 18,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_HQ_INTR_ENAB_CLR_OFF"
+   ],
+   "block": "MGRAS_HQ",
+   "writer_functions": [
+    "MgrasInitHQ"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202af0b4",
+     "function": "MgrasInitHQ",
+     "text": "sw at, 4168(v0)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_HQ_INTR_ENAB_CLR_OFF"
+     ],
+     "handler": "direct: off == MGRAS_HQ_INTR_ENAB_CLR_OFF"
+    }
+   ],
+   "name": "MGRAS_HQ_INTR_ENAB_CLR_OFF",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_HQ_INTR_ENAB_CLR_OFF)"
+  },
+  {
+   "offset": "0x11050",
+   "width": 4,
+   "dir": "r",
+   "traced_writes": 18,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "absent",
+   "model_constants": [],
+   "block": "MGRAS_HQ",
+   "writer_functions": [
+    "mgras_hq4_lowater_intr",
+    "MgrasCtxsw"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202bd2f8",
+     "function": "mgras_hq4_lowater_intr",
+     "text": "lw v0, 4176(v0)",
+     "provenance": "hwbase",
+     "dir": "r",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202bd480",
+     "function": "MgrasCtxsw",
+     "text": "lw v0, 4176(s2)",
+     "provenance": "hwbase",
+     "dir": "r",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    }
+   ],
+   "name": "widget +0x11050 written by mgras_hq4_lowater_intr [UNNAMED FIELD]",
+   "role": "named_by_accessor",
+   "note": "the kernel accessor mgras_hq4_lowater_intr computes widget +0x11050; that pins the function, not the field's meaning"
+  },
+  {
+   "offset": "0x11058",
+   "width": 4,
+   "dir": "w",
+   "traced_writes": 18,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "absent",
+   "model_constants": [],
+   "block": "MGRAS_HQ",
+   "writer_functions": [
+    "MgrasCtxsw"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202bd4e4",
+     "function": "MgrasCtxsw",
+     "text": "sw a3, 4184(s2)",
+     "provenance": "hwbase",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    }
+   ],
+   "name": "widget +0x11058 written by MgrasCtxsw [UNNAMED FIELD]",
+   "role": "named_by_accessor",
+   "note": "the kernel accessor MgrasCtxsw computes widget +0x11058; that pins the function, not the field's meaning"
+  },
+  {
+   "offset": "0x20010",
+   "width": 4,
+   "dir": "r",
+   "traced_writes": 4,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_HQ_FLAG_USER_OFF"
+   ],
+   "block": "MGRAS_USER",
+   "writer_functions": [
+    "__glMgrWaitForDMAWrite"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202c8844",
+     "function": "__glMgrWaitForDMAWrite",
+     "text": "lw at, 16(s1)",
+     "provenance": "hwbase",
+     "dir": "r",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_HQ_FLAG_USER_OFF"
+     ],
+     "handler": "direct: off == MGRAS_HQ_FLAG_USER_OFF"
+    }
+   ],
+   "name": "MGRAS_HQ_FLAG_USER_OFF",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_HQ_FLAG_USER_OFF)"
+  },
+  {
+   "offset": "0x20018",
+   "width": 4,
+   "dir": "w",
+   "traced_writes": 57,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_HQ_FLAG_CLR_USER_OFF"
+   ],
+   "block": "MGRAS_USER",
+   "writer_functions": [
+    "MgrasGatherInfo"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202aec5c",
+     "function": "MgrasGatherInfo",
+     "text": "sw a2, 24(s0)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_HQ_FLAG_CLR_USER_OFF"
+     ],
+     "handler": "direct: off == MGRAS_HQ_FLAG_CLR_USER_OFF"
+    }
+   ],
+   "name": "MGRAS_HQ_FLAG_CLR_USER_OFF",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_HQ_FLAG_CLR_USER_OFF)"
+  },
+  {
+   "offset": "0x40068",
+   "width": 4,
+   "dir": "w",
+   "traced_writes": 928,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "absent",
+   "model_constants": [],
+   "block": "MGRAS_RE4",
+   "writer_functions": [],
+   "evidence": [],
+   "name": "widget +0x40068 [UNNAMED FIELD]",
+   "role": "unnamed",
+   "note": "no held accessor computes this address; the traced path touches it and nothing pins it"
+  },
+  {
+   "offset": "0x40080",
+   "width": 4,
+   "dir": "w",
+   "traced_writes": 18,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "absent",
+   "model_constants": [],
+   "block": "MGRAS_RE4",
+   "writer_functions": [],
+   "evidence": [],
+   "name": "REFUSED widget +0x40080",
+   "role": "refused",
+   "note": "MgrasFlushHQ3 stores widget +0x40080 only as `sw v1,128(a1)` and `a1` is reloaded from the caller's stack slot (`ld a1,56(sp)` at a8000000202b53d4 / a8000000202b5408): a caller-supplied pointer, not the widget base. Attributing it would claim a register from a pointer the callee never computed, so it is refused on evidence."
+  },
+  {
+   "offset": "0x40088",
+   "width": 4,
+   "dir": "w",
+   "traced_writes": 18,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "absent",
+   "model_constants": [],
+   "block": "MGRAS_RE4",
+   "writer_functions": [],
+   "evidence": [],
+   "name": "REFUSED widget +0x40088",
+   "role": "refused",
+   "note": "same writer and same refused base as +0x40080: `sw at,136(a1)` at a8000000202b5560 with `a1` = `ld a1,56(sp)`."
+  },
+  {
+   "offset": "0x61058",
+   "width": 4,
+   "dir": "w",
+   "traced_writes": 4,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "absent",
+   "model_constants": [],
+   "block": "MGRAS_MCO",
+   "writer_functions": [
+    "mgras_mco_set_dcbctrl",
+    "mgras_mco_startclock",
+    "mgras_fpi2cProbe"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202c6440",
+     "function": "mgras_mco_set_dcbctrl",
+     "text": "sw a2, 4184(a3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202c645c",
+     "function": "mgras_mco_set_dcbctrl",
+     "text": "sw a2, 4184(v1)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202c647c",
+     "function": "mgras_mco_set_dcbctrl",
+     "text": "sw a2, 0(a3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202c6494",
+     "function": "mgras_mco_set_dcbctrl",
+     "text": "sw at, 0(v1)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202c649c",
+     "function": "mgras_mco_set_dcbctrl",
+     "text": "sw a2, 0(a3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202c64b8",
+     "function": "mgras_mco_startclock",
+     "text": "sw a0, 0(a1)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    }
+   ],
+   "name": "widget +0x61058 written by mgras_mco_set_dcbctrl [UNNAMED FIELD]",
+   "role": "named_by_accessor",
+   "note": "the kernel accessor mgras_mco_set_dcbctrl computes widget +0x61058; that pins the function, not the field's meaning"
+  },
+  {
+   "offset": "0x70400",
+   "width": 1,
+   "dir": "w",
+   "traced_writes": 112,
+   "traced_sizes": [
+    1
+   ],
+   "model_state": "absent",
+   "model_constants": [],
+   "block": "",
+   "writer_functions": [
+    "mgras_pcd_write"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202af334",
+     "function": "mgras_pcd_write",
+     "text": "sb a4, 1024(a7)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    }
+   ],
+   "name": "widget +0x70400 written by mgras_pcd_write [UNNAMED FIELD]",
+   "role": "named_by_accessor",
+   "note": "the kernel accessor mgras_pcd_write computes widget +0x70400; that pins the function, not the field's meaning"
+  },
+  {
+   "offset": "0x70c30",
+   "width": 2,
+   "dir": "w",
+   "traced_writes": 1032,
+   "traced_sizes": [
+    2
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_CMAPALL_BASE+MGRAS_CMAP_ADDR_OFF"
+   ],
+   "block": "MGRAS_CMAP",
+   "writer_functions": [
+    "MgrasSetColors"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202b0a10",
+     "function": "MgrasSetColors",
+     "text": "sh v1, 3120(s7)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 2,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b0bc4",
+     "function": "MgrasSetColors",
+     "text": "sh a1, 3120(s7)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 2,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b0bc8",
+     "function": "MgrasSetColors",
+     "text": "sh a1, 3120(s7)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 2,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_CMAPALL_BASE+MGRAS_CMAP_ADDR_OFF"
+     ],
+     "handler": "window: off >= 0x70c00, reg = off - base, reg == MGRAS_CMAP_ADDR_OFF"
+    }
+   ],
+   "name": "MGRAS_CMAPALL_BASE+MGRAS_CMAP_ADDR_OFF",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_CMAPALL_BASE+MGRAS_CMAP_ADDR_OFF)"
+  },
+  {
+   "offset": "0x70d18",
+   "width": 4,
+   "dir": "w",
+   "traced_writes": 16422,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_CMAPALL_BASE+MGRAS_CMAP_PAL_OFF"
+   ],
+   "block": "MGRAS_CMAP",
+   "writer_functions": [
+    "MgrasSetColors"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202b0a3c",
+     "function": "MgrasSetColors",
+     "text": "sw a6, 3352(s7)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b0b0c",
+     "function": "MgrasSetColors",
+     "text": "sw v1, 3352(s7)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_CMAPALL_BASE+MGRAS_CMAP_PAL_OFF"
+     ],
+     "handler": "window: off >= 0x70c00, reg = off - base, reg == MGRAS_CMAP_PAL_OFF"
+    }
+   ],
+   "name": "MGRAS_CMAPALL_BASE+MGRAS_CMAP_PAL_OFF",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_CMAPALL_BASE+MGRAS_CMAP_PAL_OFF)"
+  },
+  {
+   "offset": "0x71810",
+   "width": 2,
+   "dir": "w",
+   "traced_writes": 2,
+   "traced_sizes": [
+    2
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_DAC_BASE+MGRAS_DAC_ADDR_OFF"
+   ],
+   "block": "MGRAS_DAC",
+   "writer_functions": [
+    "MgrasInitDac"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202b01a0",
+     "function": "MgrasInitDac",
+     "text": "sh a1, 6160(a3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 2,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b01e8",
+     "function": "MgrasInitDac",
+     "text": "sh at, 6160(a3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 2,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b022c",
+     "function": "MgrasInitDac",
+     "text": "sh a1, 6160(a3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 2,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b0238",
+     "function": "MgrasInitDac",
+     "text": "sh v1, 6160(a3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 2,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b0244",
+     "function": "MgrasInitDac",
+     "text": "sh at, 6160(a3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 2,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b0290",
+     "function": "MgrasInitDac",
+     "text": "sh a1, 6160(a3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 2,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_DAC_BASE+MGRAS_DAC_ADDR_OFF"
+     ],
+     "handler": "window: off >= 0x71800, reg = off - MGRAS_DAC_BASE, reg == MGRAS_DAC_ADDR_OFF"
+    }
+   ],
+   "name": "MGRAS_DAC_BASE+MGRAS_DAC_ADDR_OFF",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_DAC_BASE+MGRAS_DAC_ADDR_OFF)"
+  },
+  {
+   "offset": "0x71811",
+   "width": 1,
+   "dir": "w",
+   "traced_writes": 10,
+   "traced_sizes": [
+    1
+   ],
+   "model_state": "absent",
+   "model_constants": [],
+   "block": "MGRAS_DAC",
+   "writer_functions": [
+    "MgrasSetDacTiming",
+    "MgrasInitDac",
+    "MgrasBlankScreen"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202af868",
+     "function": "MgrasSetDacTiming",
+     "text": "sb a5, 6161(v1)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202af878",
+     "function": "MgrasSetDacTiming",
+     "text": "sb a2, 6161(v1)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202af888",
+     "function": "MgrasSetDacTiming",
+     "text": "sb a0, 6161(v1)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b0194",
+     "function": "MgrasInitDac",
+     "text": "sb at, 6161(a3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b50d4",
+     "function": "MgrasBlankScreen",
+     "text": "sb a3, 6161(a0)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    }
+   ],
+   "name": "widget +0x71811 written by MgrasSetDacTiming [UNNAMED FIELD]",
+   "role": "named_by_accessor",
+   "note": "the kernel accessor MgrasSetDacTiming computes widget +0x71811; that pins the function, not the field's meaning"
+  },
+  {
+   "offset": "0x71890",
+   "width": 2,
+   "dir": "w",
+   "traced_writes": 1536,
+   "traced_sizes": [
+    2
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_DAC_BASE+MGRAS_DAC_PAL_OFF"
+   ],
+   "block": "MGRAS_DAC",
+   "writer_functions": [
+    "MgrasInitDac"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202b02c4",
+     "function": "MgrasInitDac",
+     "text": "sh at, 6288(a3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 2,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b02c8",
+     "function": "MgrasInitDac",
+     "text": "sh at, 6288(a3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 2,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b02d0",
+     "function": "MgrasInitDac",
+     "text": "sh at, 6288(a3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 2,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_DAC_BASE+MGRAS_DAC_PAL_OFF"
+     ],
+     "handler": "window: off >= 0x71800, reg = off - MGRAS_DAC_BASE, reg == MGRAS_DAC_PAL_OFF"
+    }
+   ],
+   "name": "MGRAS_DAC_BASE+MGRAS_DAC_PAL_OFF",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_DAC_BASE+MGRAS_DAC_PAL_OFF)"
+  },
+  {
+   "offset": "0x71910",
+   "width": 1,
+   "dir": "w",
+   "traced_writes": 10,
+   "traced_sizes": [
+    1
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_DAC_BASE+MGRAS_DAC_CMD_OFF"
+   ],
+   "block": "MGRAS_DAC",
+   "writer_functions": [
+    "MgrasSetDacTiming",
+    "MgrasInitDac",
+    "MgrasBlankScreen"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202af870",
+     "function": "MgrasSetDacTiming",
+     "text": "sb a3, 6416(v1)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202af880",
+     "function": "MgrasSetDacTiming",
+     "text": "sb a1, 6416(v1)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b0198",
+     "function": "MgrasInitDac",
+     "text": "sb a0, 6416(a3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b01a8",
+     "function": "MgrasInitDac",
+     "text": "sb v1, 6416(a3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b01ec",
+     "function": "MgrasInitDac",
+     "text": "sb a1, 6416(a3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b0230",
+     "function": "MgrasInitDac",
+     "text": "sb a0, 6416(a3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_DAC_BASE+MGRAS_DAC_CMD_OFF"
+     ],
+     "handler": "window: off >= 0x71800, reg = off - MGRAS_DAC_BASE, reg == MGRAS_DAC_CMD_OFF"
+    }
+   ],
+   "name": "MGRAS_DAC_BASE+MGRAS_DAC_CMD_OFF",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_DAC_BASE+MGRAS_DAC_CMD_OFF)"
+  },
+  {
+   "offset": "0x71c08",
+   "width": 1,
+   "dir": "w",
+   "traced_writes": 113,
+   "traced_sizes": [
+    1
+   ],
+   "model_state": "absent",
+   "model_constants": [
+    "MGRAS_XMAP_BASE+MGRAS_XMAP_PP1SEL_OFF"
+   ],
+   "block": "MGRAS_XMAP",
+   "writer_functions": [
+    "MgrasSetXMAPTiming",
+    "MgrasInitXMAP",
+    "MgrasSyncREPP",
+    "MgrasSyncPPRDRAMs"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202afae8",
+     "function": "MgrasSetXMAPTiming",
+     "text": "sb a3, 7176(a5)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b060c",
+     "function": "MgrasInitXMAP",
+     "text": "sb a5, 7176(a4)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b0d20",
+     "function": "MgrasSyncREPP",
+     "text": "sb v1, 7176(s1)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b11d4",
+     "function": "MgrasSyncREPP",
+     "text": "sb s2, 7176(s1)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b14f4",
+     "function": "MgrasSyncPPRDRAMs",
+     "text": "sb a1, 7176(v1)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_XMAP_BASE+MGRAS_XMAP_PP1SEL_OFF"
+     ],
+     "handler": ""
+    }
+   ],
+   "name": "MGRAS_XMAP_BASE+MGRAS_XMAP_PP1SEL_OFF",
+   "role": "model_named",
+   "note": "the model names this address but implements no handler for it, so a write lands in the generic reg[] play-back"
+  },
+  {
+   "offset": "0x71c88",
+   "width": 1,
+   "dir": "w",
+   "traced_writes": 14937,
+   "traced_sizes": [
+    1
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_XMAP_BASE+MGRAS_XMAP_INDEX_OFF"
+   ],
+   "block": "MGRAS_XMAP",
+   "writer_functions": [
+    "MgrasGatherInfo",
+    "MgrasSetTiming",
+    "MgrasSetXMAPTiming",
+    "MgrasInitXMAP",
+    "MgrasSetColors",
+    "MgrasSyncREPP",
+    "MgrasSyncPPRDRAMs"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202aeb98",
+     "function": "MgrasGatherInfo",
+     "text": "sb at, 7304(s4)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202af3e4",
+     "function": "MgrasSetTiming",
+     "text": "sb a6, 7304(s4)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202af3ec",
+     "function": "MgrasSetTiming",
+     "text": "sb a5, 7304(s4)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202afaec",
+     "function": "MgrasSetXMAPTiming",
+     "text": "sb a3, 7304(a5)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202afb2c",
+     "function": "MgrasSetXMAPTiming",
+     "text": "sb v1, 7304(a5)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202afb3c",
+     "function": "MgrasSetXMAPTiming",
+     "text": "sb at, 7304(a5)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_XMAP_BASE+MGRAS_XMAP_INDEX_OFF"
+     ],
+     "handler": "direct: off == MGRAS_XMAP_BASE + MGRAS_XMAP_INDEX_OFF"
+    }
+   ],
+   "name": "MGRAS_XMAP_BASE+MGRAS_XMAP_INDEX_OFF",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_XMAP_BASE+MGRAS_XMAP_INDEX_OFF)"
+  },
+  {
+   "offset": "0x71d00",
+   "width": 4,
+   "dir": "rw",
+   "traced_writes": 76,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_XMAP_BASE+MGRAS_XMAP_CONFIG_OFF"
+   ],
+   "block": "MGRAS_XMAP",
+   "writer_functions": [
+    "MgrasGatherInfo",
+    "MgrasSetXMAPTiming",
+    "MgrasInitXMAP",
+    "MgrasSyncREPP"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202aeb9c",
+     "function": "MgrasGatherInfo",
+     "text": "lw a3, 7424(s4)",
+     "provenance": "arg",
+     "dir": "r",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202afc60",
+     "function": "MgrasSetXMAPTiming",
+     "text": "sw v0, 7424(a5)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b06c8",
+     "function": "MgrasInitXMAP",
+     "text": "sw v0, 7424(a4)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b0858",
+     "function": "MgrasInitXMAP",
+     "text": "sw v0, 7424(a4)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b0d98",
+     "function": "MgrasSyncREPP",
+     "text": "sw s7, 7424(s1)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b10b8",
+     "function": "MgrasSyncREPP",
+     "text": "sw s7, 7424(s1)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_XMAP_BASE+MGRAS_XMAP_CONFIG_OFF"
+     ],
+     "handler": "direct: off == MGRAS_XMAP_BASE + MGRAS_XMAP_CONFIG_OFF"
+    }
+   ],
+   "name": "MGRAS_XMAP_BASE+MGRAS_XMAP_CONFIG_OFF",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_XMAP_BASE+MGRAS_XMAP_CONFIG_OFF)"
+  },
+  {
+   "offset": "0x71d08",
+   "width": 1,
+   "dir": "w",
+   "traced_writes": 298,
+   "traced_sizes": [
+    1
+   ],
+   "model_state": "absent",
+   "model_constants": [
+    "MGRAS_XMAP_BASE+MGRAS_XMAP_CFGBYTE_OFF"
+   ],
+   "block": "MGRAS_XMAP",
+   "writer_functions": [
+    "MgrasSetXMAPTiming",
+    "MgrasInitXMAP",
+    "MgrasSyncREPP"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202afaf0",
+     "function": "MgrasSetXMAPTiming",
+     "text": "sb v1, 7432(a5)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b0650",
+     "function": "MgrasInitXMAP",
+     "text": "sb v0, 7432(a4)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b0d84",
+     "function": "MgrasSyncREPP",
+     "text": "sb a2, 7432(s1)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b0fd8",
+     "function": "MgrasSyncREPP",
+     "text": "sb zero, 7432(s1)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b10a8",
+     "function": "MgrasSyncREPP",
+     "text": "sb a2, 7432(s1)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_XMAP_BASE+MGRAS_XMAP_CFGBYTE_OFF"
+     ],
+     "handler": ""
+    }
+   ],
+   "name": "MGRAS_XMAP_BASE+MGRAS_XMAP_CFGBYTE_OFF",
+   "role": "model_named",
+   "note": "the model names this address but implements no handler for it, so a write lands in the generic reg[] play-back"
+  },
+  {
+   "offset": "0x71e00",
+   "width": 4,
+   "dir": "w",
+   "traced_writes": 30,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_XMAP_BASE+MGRAS_XMAP_MAINMODE_OFF"
+   ],
+   "block": "MGRAS_XMAP",
+   "writer_functions": [
+    "MgrasInitXMAP"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202b0720",
+     "function": "MgrasInitXMAP",
+     "text": "sw a6, 7680(a4)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_XMAP_BASE+MGRAS_XMAP_MAINMODE_OFF"
+     ],
+     "handler": "direct: off == MGRAS_XMAP_BASE + MGRAS_XMAP_MAINMODE_OFF"
+    }
+   ],
+   "name": "MGRAS_XMAP_BASE+MGRAS_XMAP_MAINMODE_OFF",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_XMAP_BASE+MGRAS_XMAP_MAINMODE_OFF)"
+  },
+  {
+   "offset": "0x71e80",
+   "width": 4,
+   "dir": "w",
+   "traced_writes": 12,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_XMAP_BASE+MGRAS_XMAP_OVLMODE_OFF"
+   ],
+   "block": "MGRAS_XMAP",
+   "writer_functions": [
+    "MgrasInitXMAP"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202b07b0",
+     "function": "MgrasInitXMAP",
+     "text": "sw zero, 7808(a4)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_XMAP_BASE+MGRAS_XMAP_OVLMODE_OFF"
+     ],
+     "handler": "direct: off == MGRAS_XMAP_BASE + MGRAS_XMAP_OVLMODE_OFF"
+    }
+   ],
+   "name": "MGRAS_XMAP_BASE+MGRAS_XMAP_OVLMODE_OFF",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_XMAP_BASE+MGRAS_XMAP_OVLMODE_OFF)"
+  },
+  {
+   "offset": "0x71f00",
+   "width": 4,
+   "dir": "w",
+   "traced_writes": 1580,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "absent",
+   "model_constants": [
+    "MGRAS_XMAP_BASE+MGRAS_XMAP_DIB_OFF"
+   ],
+   "block": "MGRAS_XMAP",
+   "writer_functions": [
+    "MgrasSetTiming",
+    "MgrasSetXMAPTiming",
+    "MgrasInitXMAP",
+    "MgrasSetColors",
+    "MgrasSyncPPRDRAMs"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202af3e8",
+     "function": "MgrasSetTiming",
+     "text": "sw zero, 7936(s4)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202af3f0",
+     "function": "MgrasSetTiming",
+     "text": "sw zero, 7936(s4)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202afb34",
+     "function": "MgrasSetXMAPTiming",
+     "text": "sw v0, 7936(a5)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202afb44",
+     "function": "MgrasSetXMAPTiming",
+     "text": "sw a3, 7936(a5)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202afba0",
+     "function": "MgrasSetXMAPTiming",
+     "text": "sw at, 7936(a5)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202afbb0",
+     "function": "MgrasSetXMAPTiming",
+     "text": "sw v1, 7936(a5)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_XMAP_BASE+MGRAS_XMAP_DIB_OFF"
+     ],
+     "handler": ""
+    }
+   ],
+   "name": "MGRAS_XMAP_BASE+MGRAS_XMAP_DIB_OFF [UNGROUNDED FIELD]",
+   "role": "ungrounded_field",
+   "note": "the model names widget +0x71f00 MGRAS_XMAP_DIB_OFF (the XMAP digital input bypass, CRS(6)|DW4 = 0x300 on MGRAS_XMAP_BASE) and implements no handler for it; every /unix accessor that computes the address is a timing/palette function (MgrasSetTiming, MgrasSetXMAPTiming, MgrasSetColors, MgrasInitXMAP, MgrasCalcScreenSize, MgrasSyncPPRDRAMs). The kernel witness therefore does NOT refute the model's name: on the traced path 100% of writes to this address follow a write to the XMAP INDEX port +0x71c88 with per-DID index values, which is exactly the indexed CRS shape the model documents. Index-before-data is necessary and NOT sufficient (+0x71c08 PP1_SELECT passes the same test and cannot be per-DID), and mgrashw.h -- which the model cites by line for every CRS number -- is not held by the project. So: field SEMANTICS UNGROUNDED, the model's name NOT refuted.",
+   "index_before_data": [
+    {
+     "writes": 1580,
+     "preceded_by_index": 1580,
+     "index_values": [
+      0,
+      4,
+      8,
+      12,
+      16,
+      20,
+      24,
+      32
+     ],
+     "port": "0x71c88",
+     "scope": "window"
+    },
+    {
+     "writes": 113,
+     "preceded_by_index": 37,
+     "index_values": [
+      0
+     ],
+     "port": "0x71c88",
+     "scope": "window",
+     "note": "+0x71c08 PP1_SELECT under the same test: 37/113 writes preceded by an index write, so index-before-data is necessary and NOT sufficient for a per-DID register"
+    }
+   ]
+  },
+  {
+   "offset": "0x72008",
+   "width": 1,
+   "dir": "w",
+   "traced_writes": 4,
+   "traced_sizes": [
+    1
+   ],
+   "model_state": "absent",
+   "model_constants": [],
+   "block": "MGRAS_VC3",
+   "writer_functions": [
+    "MgrasGetVertLineCnt"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202c7d8c",
+     "function": "MgrasGetVertLineCnt",
+     "text": "sb v1, 8200(v0)",
+     "provenance": "hwbase",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    }
+   ],
+   "name": "widget +0x72008 written by MgrasGetVertLineCnt [UNNAMED FIELD]",
+   "role": "named_by_accessor",
+   "note": "the kernel accessor MgrasGetVertLineCnt computes widget +0x72008; that pins the function, not the field's meaning"
+  },
+  {
+   "offset": "0x72038",
+   "width": 4,
+   "dir": "w",
+   "traced_writes": 100,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_VC3_INDEXDATA_OFF"
+   ],
+   "block": "MGRAS_VC3",
+   "writer_functions": [
+    "MgrasSetTiming",
+    "MgrasSetVC3Timing",
+    "MgrasVerifyVC3SRAM",
+    "MgrasLoadVC3SRAM",
+    "MgrasClearCursor",
+    "MgrasBlackoutTiming",
+    "MgrasEnableVideoTiming",
+    "MgrasSetGenlock",
+    "MgrasPositionCursor"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202af574",
+     "function": "MgrasSetTiming",
+     "text": "sw t8, 8248(s4)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202af94c",
+     "function": "MgrasSetVC3Timing",
+     "text": "sw a2, 8248(s5)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202af950",
+     "function": "MgrasSetVC3Timing",
+     "text": "sw a3, 8248(s5)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202af9a8",
+     "function": "MgrasSetVC3Timing",
+     "text": "sw a0, 8248(s5)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202afa18",
+     "function": "MgrasSetVC3Timing",
+     "text": "sw a3, 8248(s5)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202afa24",
+     "function": "MgrasSetVC3Timing",
+     "text": "sw a2, 8248(s5)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_VC3_INDEXDATA_OFF"
+     ],
+     "handler": "direct: off == MGRAS_VC3_INDEXDATA_OFF"
+    }
+   ],
+   "name": "MGRAS_VC3_INDEXDATA_OFF",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_VC3_INDEXDATA_OFF)"
+  },
+  {
+   "offset": "0x72190",
+   "width": 2,
+   "dir": "rw",
+   "traced_writes": 7406,
+   "traced_sizes": [
+    2
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_VC3_RAM_OFF"
+   ],
+   "block": "MGRAS_VC3",
+   "writer_functions": [
+    "MgrasVerifyVC3SRAM",
+    "MgrasLoadVC3SRAM"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202b3f30",
+     "function": "MgrasVerifyVC3SRAM",
+     "text": "lhu a5, 8592(s2)",
+     "provenance": "arg",
+     "dir": "r",
+     "width": 2,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b3f84",
+     "function": "MgrasVerifyVC3SRAM",
+     "text": "lhu a3, 8592(s2)",
+     "provenance": "arg",
+     "dir": "r",
+     "width": 2,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b3fe8",
+     "function": "MgrasVerifyVC3SRAM",
+     "text": "lhu s4, 8592(s2)",
+     "provenance": "arg",
+     "dir": "r",
+     "width": 2,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b4154",
+     "function": "MgrasLoadVC3SRAM",
+     "text": "sh at, 8592(a7)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 2,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_VC3_RAM_OFF"
+     ],
+     "handler": "direct: off == MGRAS_VC3_RAM_OFF"
+    }
+   ],
+   "name": "MGRAS_VC3_RAM_OFF",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_VC3_RAM_OFF)"
+  },
+  {
+   "offset": "0x72408",
+   "width": 4,
+   "dir": "rw",
+   "traced_writes": 4,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_BDVERS0_OFF"
+   ],
+   "block": "MGRAS_VC3",
+   "writer_functions": [
+    "MgrasGatherInfo",
+    "MgrasSetTiming",
+    "MgrasSetGenlock"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202aea34",
+     "function": "MgrasGatherInfo",
+     "text": "lw v0, 9224(s4)",
+     "provenance": "arg",
+     "dir": "r",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202af440",
+     "function": "MgrasSetTiming",
+     "text": "sw v0, 9224(s4)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202af550",
+     "function": "MgrasSetTiming",
+     "text": "sw a6, 9224(s4)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202af558",
+     "function": "MgrasSetTiming",
+     "text": "sw s3, 9224(s4)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b4598",
+     "function": "MgrasSetGenlock",
+     "text": "sw a3, 9224(a2)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b45c8",
+     "function": "MgrasSetGenlock",
+     "text": "sw v1, 9224(a2)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_BDVERS0_OFF"
+     ],
+     "handler": "direct: off == MGRAS_BDVERS0_OFF"
+    }
+   ],
+   "name": "MGRAS_BDVERS0_OFF",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_BDVERS0_OFF)"
+  },
+  {
+   "offset": "0x72c08",
+   "width": 1,
+   "dir": "rw",
+   "traced_writes": 10,
+   "traced_sizes": [
+    1
+   ],
+   "model_state": "absent",
+   "model_constants": [],
+   "block": "MGRAS_VC3",
+   "writer_functions": [
+    "mgras_fpi2cProbe"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202c6800",
+     "function": "mgras_fpi2cProbe",
+     "text": "sb zero, 11272(s3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202c6820",
+     "function": "mgras_fpi2cProbe",
+     "text": "sb a1, 11272(s3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202c6840",
+     "function": "mgras_fpi2cProbe",
+     "text": "lbu v1, 11272(s3)",
+     "provenance": "arg",
+     "dir": "r",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    }
+   ],
+   "name": "widget +0x72c08 written by mgras_fpi2cProbe [UNNAMED FIELD]",
+   "role": "named_by_accessor",
+   "note": "the kernel accessor mgras_fpi2cProbe computes widget +0x72c08; that pins the function, not the field's meaning"
+  },
+  {
+   "offset": "0x72c88",
+   "width": 1,
+   "dir": "rw",
+   "traced_writes": 20,
+   "traced_sizes": [
+    1
+   ],
+   "model_state": "absent",
+   "model_constants": [],
+   "block": "MGRAS_VC3",
+   "writer_functions": [
+    "mgras_mco_shutdown_FPGAs",
+    "mgras_mco_config_FPGAs",
+    "mgras_fpi2cProbe"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202c53b8",
+     "function": "mgras_mco_shutdown_FPGAs",
+     "text": "sb v0, 0(v1)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202c543c",
+     "function": "mgras_mco_config_FPGAs",
+     "text": "sb v0, 11400(s2)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202c5478",
+     "function": "mgras_mco_config_FPGAs",
+     "text": "lbu a2, 11400(s2)",
+     "provenance": "arg",
+     "dir": "r",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202c6810",
+     "function": "mgras_fpi2cProbe",
+     "text": "sb v1, 11400(s3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202c6830",
+     "function": "mgras_fpi2cProbe",
+     "text": "sb a2, 11400(s3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 1,
+     "object": "/unix (sha256 below)"
+    }
+   ],
+   "name": "widget +0x72c88 written by mgras_mco_shutdown_FPGAs [UNNAMED FIELD]",
+   "role": "named_by_accessor",
+   "note": "the kernel accessor mgras_mco_shutdown_FPGAs computes widget +0x72c88; that pins the function, not the field's meaning"
+  },
+  {
+   "offset": "0x120400",
+   "width": 4,
+   "dir": "w",
+   "traced_writes": 12807,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "absent",
+   "model_constants": [],
+   "block": "MGRAS_HQ_CMD",
+   "writer_functions": [
+    "MgrasGatherInfo",
+    "MgrasInitHQ",
+    "MgrasSetRSSTiming",
+    "MgrasSyncREPP",
+    "MgrasSyncPPRDRAMs",
+    "MgrasInitRSS",
+    "_MgrasWriteTexBase",
+    "MgrasVidTextureXferStart",
+    "__glMgrWaitForDMAWrite",
+    "MgrasSaveTexData",
+    "MgrasInitCCR"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202aec28",
+     "function": "MgrasGatherInfo",
+     "text": "sd v1, 0(a2)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 8,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202af098",
+     "function": "MgrasInitHQ",
+     "text": "sd a0, 0(a1)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 8,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202afe44",
+     "function": "MgrasSetRSSTiming",
+     "text": "sd a3, 1024(a2)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 8,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b0e50",
+     "function": "MgrasSyncREPP",
+     "text": "sd at, 1024(s8)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 8,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b0e94",
+     "function": "MgrasSyncREPP",
+     "text": "sd v1, 1024(s8)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 8,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202b0ef0",
+     "function": "MgrasSyncREPP",
+     "text": "sd at, 1024(s8)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 8,
+     "object": "/unix (sha256 below)"
+    }
+   ],
+   "name": "widget +0x120400 written by MgrasGatherInfo [UNNAMED FIELD]",
+   "role": "named_by_accessor",
+   "note": "the kernel accessor MgrasGatherInfo computes widget +0x120400; that pins the function, not the field's meaning"
+  },
+  {
+   "offset": "0x120404",
+   "width": 4,
+   "dir": "w",
+   "traced_writes": 5711,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "absent",
+   "model_constants": [],
+   "block": "MGRAS_HQ_CMD",
+   "writer_functions": [],
+   "evidence": [],
+   "name": "widget +0x120404 [UNNAMED FIELD]",
+   "role": "unnamed",
+   "note": "no held accessor computes this address; the traced path touches it and nothing pins it"
+  },
+  {
+   "offset": "0x130400",
+   "width": 4,
+   "dir": "w",
+   "traced_writes": 301,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_HAG_TXTBL_WIN"
+   ],
+   "block": "MGRAS_TXTBL",
+   "writer_functions": [
+    "MgrasInitDMA",
+    "MgrasInstallTxTbl_Kern",
+    "MgrasResetTxTbl_Kern"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202c02e0",
+     "function": "MgrasInitDMA",
+     "text": "sw a1, 1024(t3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202c02e8",
+     "function": "MgrasInitDMA",
+     "text": "sd t8, 1024(t3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 8,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202c02f8",
+     "function": "MgrasInitDMA",
+     "text": "sd v1, 1024(t3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 8,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202c0304",
+     "function": "MgrasInitDMA",
+     "text": "sd v0, 1024(t3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 8,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202c0310",
+     "function": "MgrasInitDMA",
+     "text": "sd at, 1024(t3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 8,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "insn": "a8000000202c037c",
+     "function": "MgrasInitDMA",
+     "text": "sd v0, 1024(t3)",
+     "provenance": "arg",
+     "dir": "w",
+     "width": 8,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_HAG_TXTBL_WIN"
+     ],
+     "handler": "direct: off == MGRAS_HAG_TXTBL_WIN"
+    }
+   ],
+   "name": "MGRAS_HAG_TXTBL_WIN",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_HAG_TXTBL_WIN)"
+  },
+  {
+   "offset": "0x130404",
+   "width": 4,
+   "dir": "w",
+   "traced_writes": 137,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "implemented",
+   "model_constants": [],
+   "block": "MGRAS_TXTBL",
+   "writer_functions": [],
+   "evidence": [],
+   "name": "widget +0x130404 [UNNAMED FIELD]",
+   "role": "unnamed",
+   "note": "no held accessor computes this address; the traced path touches it and nothing pins it"
+  },
+  {
+   "offset": "0x130500",
+   "width": 4,
+   "dir": "w",
+   "traced_writes": 18,
+   "traced_sizes": [
+    4
+   ],
+   "model_state": "implemented",
+   "model_constants": [
+    "MGRAS_CTXSW_TRIG_OFF"
+   ],
+   "block": "MGRAS_TXTBL",
+   "writer_functions": [
+    "MgrasCtxsw"
+   ],
+   "evidence": [
+    {
+     "insn": "a8000000202bd500",
+     "function": "MgrasCtxsw",
+     "text": "sw a0, 0(a2)",
+     "provenance": "hwbase",
+     "dir": "w",
+     "width": 4,
+     "object": "/unix (sha256 below)"
+    },
+    {
+     "source": "model",
+     "constants": [
+      "MGRAS_CTXSW_TRIG_OFF"
+     ],
+     "handler": "direct: off == MGRAS_CTXSW_TRIG_OFF"
+    }
+   ],
+   "name": "MGRAS_CTXSW_TRIG_OFF",
+   "role": "model_named",
+   "note": "the model names this address (MGRAS_CTXSW_TRIG_OFF)"
+  }
+ ],
+ "header": {
+  "golden": "octane-ip30-demos-mgras-perf",
+  "unix_sha256": "62c0379240e0f1ffcb1a8c23ac89dead9d1407bc91b03966a3715bc463cfb2b9",
+  "trace": "trace-hk.trace (see access_sequence.json for its sha256; not committed)",
+  "model_tree": "qemu-sgi-repo @ 6257b2c79233153c7a946ec57e3066b4760d6ce2",
+  "n_registers": 41
+ }
+}
