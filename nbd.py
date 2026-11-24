@@ -19,11 +19,12 @@ import os
 import socket
 import struct
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
 
-from pyirix.tmpdir import tmp_dir
+from pyirix.tmpdir import SUN_PATH_MAX, socket_dir, socket_path_fits
 
 # Handshake magic
 NBDMAGIC = 0x4E42444D41474943
@@ -283,11 +284,14 @@ class QemuNbd:
     """
 
     def __init__(self, image, readonly=False, cache="writethrough",
-                 qemu_nbd="qemu-nbd"):
+                 qemu_nbd="qemu-nbd", sockdir=None):
         self.image = str(image)
         self.readonly = readonly
         self.cache = cache
         self.qemu_nbd = qemu_nbd
+        # A caller may NAME the socket directory; None resolves one that the kernel will
+        # accept (`pyirix.tmpdir.socket_dir`), which is what makes a deep scratch root legal.
+        self.sockdir = sockdir
         self._proc = None
         self._sockdir = None
         self._sockfile = None
@@ -295,8 +299,16 @@ class QemuNbd:
         self._last_stderr = ""
 
     def __enter__(self):
-        self._sockdir = tmp_dir(prefix="nbd_")
+        root = (str(self.sockdir) if self.sockdir is not None
+                else socket_dir(prefix="nbd_", leaf="sock"))
+        self._sockdir = tempfile.mkdtemp(prefix="nbd_", dir=root)
         self._sockfile = os.path.join(self._sockdir, "sock")
+        if not socket_path_fits(self._sockfile):
+            self._cleanup()
+            raise NbdError(
+                f"refusing to run qemu-nbd: the socket path {self._sockfile!r} is "
+                f"{len(self._sockfile)} bytes and the kernel's unix-socket limit is "
+                f"{SUN_PATH_MAX}; name a shorter directory (PYIRIX_SOCKDIR or sockdir=)")
         args = [self.qemu_nbd, "-k", self._sockfile, "-f", "qcow2",
                 "--cache", self.cache]
         if self.readonly:
