@@ -328,6 +328,19 @@ def build_volume_header(total_sectors, efs_start_sector):
 
 # ── EFS Filesystem Builder ──────────────────────────────────────────
 
+class EFSFullError(RuntimeError):
+    """The volume has no data block left to give (or none inside the volume).
+
+    Raised instead of walking past ``fs_size``: an allocation outside the
+    filesystem is not a smaller filesystem, it is silent corruption (and, on
+    the last block, a file overwritten by the revolving superblock).
+    """
+
+
+class EFSReadbackError(RuntimeError):
+    """A file staged into the image does not read back byte-identical."""
+
+
 class EFSImageBuilder:
     """Builds a correct SGI EFS filesystem image from files.
 
@@ -337,8 +350,12 @@ class EFSImageBuilder:
     - Superblock cgisize = inode BLOCKS per CG (not total inodes)
     """
 
-    def __init__(self, total_blocks):
+    def __init__(self, total_blocks, auto_size=False):
+        # auto_size: treat total_blocks as a SEED and grow the volume until the
+        # plan fits (set only when the caller has no size in mind; an explicit
+        # budget is honoured and a volume that cannot hold the tree is refused).
         self.total_blocks = total_blocks
+        self.auto_size = auto_size
         self.files = {}       # path -> (mode, size, data_or_target)
         self.dirs = {}        # path -> list of child names
         self.next_inode = EFS_ROOT_INODE + 1
@@ -448,52 +465,67 @@ class EFSImageBuilder:
         cgbb = (ino >> 2) % self.cgisize
         return self.firstcg + cg * self.cgfsize + cgbb
 
-    def _allocate_blocks(self, num_blocks):
-        """Allocate contiguous blocks, return list of (bn, length, offset).
+    def _allocate_run(self, num_blocks, max_run):
+        """Allocate *num_blocks* data blocks in runs of at most *max_run*.
 
-        Allocates data blocks linearly across CGs, skipping the inode
-        blocks at the start of each CG.
+        Walks the cylinder groups in order, skipping each CG's inode blocks,
+        and STOPS AT THE END OF THE VOLUME: the last block (``fs_size - 1``) is
+        the revolving superblock, which ``build`` writes after the file data, so
+        a file placed there reads back with the superblock's bytes; anything
+        past ``fs_size`` is outside the filesystem entirely.  Both used to be
+        handed out silently when the volume was sized too small (measured on
+        the real Foundation 1 tree: ``x_eoe.sw64`` got blocks 1,079,087..1,079,376
+        of a 1,079,232-block volume).  Running out is an error, not an
+        allocation.
         """
         if num_blocks == 0:
             return []
+
+        # The revolving superblock lives in the volume's last block.
+        usable_end = self.fs_size - 1
 
         extents = []
         remaining = num_blocks
         logical_offset = 0
 
         while remaining > 0:
-            # Check if we've hit the inode area of the next CG
-            cg_of_block = (self.next_data_block - self.firstcg) // self.cgfsize
-            cg_start = self.firstcg + cg_of_block * self.cgfsize
-            cg_data_start = cg_start + self.cgisize
-            cg_data_end = cg_start + self.cgfsize
+            cg = (self.next_data_block - self.firstcg) // self.cgfsize
+            if cg < 0:
+                cg = 0
+            if cg >= self.ncg:
+                raise EFSFullError(
+                    f"EFS filesystem full: need {remaining} more blocks, "
+                    f"no cylinder groups left (fs_size={self.fs_size}, "
+                    f"ncg={self.ncg}, cgfsize={self.cgfsize})")
 
-            # If we're in the inode area, skip to data area
-            if self.next_data_block < cg_data_start:
-                self.next_data_block = cg_data_start
+            data_start = self.firstcg + cg * self.cgfsize + self.cgisize
+            data_end = min(self.firstcg + (cg + 1) * self.cgfsize, usable_end)
 
-            # If we're past this CG, move to next CG's data area
-            if self.next_data_block >= cg_data_end:
-                next_cg = cg_of_block + 1
-                if next_cg >= self.ncg:
-                    raise RuntimeError(
-                        f"EFS filesystem full: need {remaining} more blocks, "
-                        f"no CGs left")
-                self.next_data_block = self.firstcg + next_cg * self.cgfsize + self.cgisize
+            # In the inode area -> skip to this CG's data area.
+            if self.next_data_block < data_start:
+                self.next_data_block = data_start
 
-            # Recalculate how much space is left in this CG
-            cg_of_block = (self.next_data_block - self.firstcg) // self.cgfsize
-            cg_data_end = self.firstcg + cg_of_block * self.cgfsize + self.cgfsize
-            available = cg_data_end - self.next_data_block
+            # This CG is exhausted -> start the next one.
+            if self.next_data_block >= data_end:
+                self.next_data_block = (self.firstcg + (cg + 1) * self.cgfsize
+                                        + self.cgisize)
+                continue
 
-            length = min(remaining, EFS_MAX_EXTENT_LENGTH, available)
-            bn = self.next_data_block
-            extents.append((bn, length, logical_offset))
+            length = min(remaining, max_run, data_end - self.next_data_block)
+            extents.append((self.next_data_block, length, logical_offset))
             self.next_data_block += length
             remaining -= length
             logical_offset += length
 
         return extents
+
+    def _allocate_blocks(self, num_blocks):
+        """Allocate contiguous blocks, return list of (bn, length, offset).
+
+        Allocates data blocks linearly across CGs, skipping the inode
+        blocks at the start of each CG and the revolving superblock.
+        """
+        return self._allocate_run(num_blocks, EFS_MAX_EXTENT_LENGTH)
 
     # Max blocks per indirect extent (from IRIX kernel efs_ino.h)
     EFS_MAXINDIRBBS = 64
@@ -504,43 +536,7 @@ class EFSImageBuilder:
         Like _allocate_blocks but limits each run to EFS_MAXINDIRBBS (64)
         instead of EFS_MAX_EXTENT_LENGTH (248). Returns list of (bn, length, offset).
         """
-        if num_blocks == 0:
-            return []
-
-        extents = []
-        remaining = num_blocks
-        logical_offset = 0
-
-        while remaining > 0:
-            cg_of_block = (self.next_data_block - self.firstcg) // self.cgfsize
-            cg_start = self.firstcg + cg_of_block * self.cgfsize
-            cg_data_start = cg_start + self.cgisize
-            cg_data_end = cg_start + self.cgfsize
-
-            if self.next_data_block < cg_data_start:
-                self.next_data_block = cg_data_start
-            if self.next_data_block >= cg_data_end:
-                next_cg = cg_of_block + 1
-                if next_cg >= self.ncg:
-                    raise RuntimeError(
-                        f"EFS filesystem full: need {remaining} more blocks")
-                self.next_data_block = (self.firstcg + next_cg * self.cgfsize
-                                        + self.cgisize)
-
-            cg_of_block = (self.next_data_block - self.firstcg) // self.cgfsize
-            cg_data_end = (self.firstcg + cg_of_block * self.cgfsize
-                           + self.cgfsize)
-            available = cg_data_end - self.next_data_block
-
-            # Limit to EFS_MAXINDIRBBS per run
-            length = min(remaining, self.EFS_MAXINDIRBBS, available)
-            bn = self.next_data_block
-            extents.append((bn, length, logical_offset))
-            self.next_data_block += length
-            remaining -= length
-            logical_offset += length
-
-        return extents
+        return self._allocate_run(num_blocks, self.EFS_MAXINDIRBBS)
 
     def _build_indirect_extents(self, data_extents):
         """Handle files with more than 12 direct extents using indirect mode.
@@ -606,8 +602,8 @@ class EFSImageBuilder:
 
     def build(self, output_path):
         """Build the complete EFS image and write to file."""
-        self._compute_geometry()
         total_items = len(self.files) + len(self.dirs)
+        inode_table = self._prepare()
 
         print(f"  EFS geometry:")
         print(f"    fs_size: {self.fs_size} blocks "
@@ -622,11 +618,68 @@ class EFSImageBuilder:
         print(f"    Verify: firstcg + cgfsize*ncg = "
               f"{self.firstcg} + {self.cgfsize}*{self.ncg} = "
               f"{self.firstcg + self.cgfsize * self.ncg} == fs_size={self.fs_size}")
+        if self.indirect_count:
+            print(f"  Files with indirect extents: {self.indirect_count}")
+
+        self._write(output_path, inode_table)
+        self.verify_readback(output_path)
+
+    #: How many times an auto-sized volume may grow before the plan is refused.
+    MAX_GROW_ROUNDS = 8
+
+    def _prepare(self):
+        """Compute the geometry and plan the layout of the whole tree.
+
+        With ``auto_size`` the volume grows until the plan fits, which is what
+        the no-budget caller asked for; the plan is then RE-checked, because a
+        bigger volume moves every CG boundary.  With an explicit size, a tree
+        that does not fit raises :class:`EFSFullError` -- refusing is the point:
+        the previous behaviour was to allocate past the end of the volume.
+        """
+        for _round in range(self.MAX_GROW_ROUNDS):
+            self._compute_geometry()
+            try:
+                inode_table = self._plan()
+            except EFSFullError:
+                if not self.auto_size:
+                    raise
+                self.total_blocks = self._grown_total_blocks()
+                continue
+            if self.next_data_block <= self.fs_size - 1:
+                return inode_table
+            if not self.auto_size:
+                raise EFSFullError(
+                    f"EFS plan needs block {self.next_data_block} but the "
+                    f"volume ends at {self.fs_size}")
+            self.total_blocks = self._grown_total_blocks()
+        raise EFSFullError(
+            f"EFS volume still does not fit after {self.MAX_GROW_ROUNDS} "
+            f"rounds (total_blocks={self.total_blocks}, "
+            f"fs_size={self.fs_size})")
+
+    def _grown_total_blocks(self):
+        """The smallest volume the current plan needs, with a little margin.
+
+        The shortfall is measured from where the plan actually ran out, so one
+        round is normally enough; the margin covers the per-CG inode blocks the
+        bigger volume brings with it.
+        """
+        short = max(1, self.next_data_block - (self.fs_size - 1))
+        # Each new block of volume also pays for cgisize/ncg of inode blocks.
+        per_block = 1.0 + self.cgisize / float(self.ncg)
+        extra = int(short * per_block) + self.ncg * self.cgisize + 16
+        return self.total_blocks + extra
+
+    def _plan(self):
+        """Assign inodes, extents and data blocks for every old and new file.
+
+        Returns the inode table: ``inode_num -> (inode_bytes, [(bn, bytes)])``.
+        Allocates from ``next_data_block``, which the caller has reset.
+        """
 
         # Data blocks start after inode blocks in first CG
         self.next_data_block = self.firstcg + self.cgisize
 
-        # Build all inode and data content
         # inode_num -> (inode_bytes, [(data_block, data_bytes), ...])
         inode_table = {}
 
@@ -746,9 +799,11 @@ class EFSImageBuilder:
 
             inode_table[ino] = (inode_bytes, data_blocks)
 
-        if indirect_count:
-            print(f"  Files with indirect extents: {indirect_count}")
+        self.indirect_count = indirect_count
+        return inode_table
 
+    def _write(self, output_path, inode_table):
+        """Write the planned layout to *output_path* as a raw EFS image."""
         # Now write the image
         print(f"  Writing image to {output_path}...")
 
@@ -811,6 +866,12 @@ class EFSImageBuilder:
                     nblocks = (len(chunk) + EFS_BLOCK_SIZE - 1) // EFS_BLOCK_SIZE
                     for b in range(bn, bn + nblocks):
                         mark_allocated(b)
+
+            # Mark the revolving superblock (fs_size - 1) as allocated: it is
+            # not file data, and a later writer that trusts this bitmap must
+            # never put a file there (the live allocator in
+            # pyirix.efs.operations allocates from this bitmap).
+            mark_allocated(self.fs_size - 1)
 
             # Count free DATA blocks (only data areas, not inode/metadata)
             free_blocks = 0
@@ -1004,21 +1065,164 @@ class EFSImageBuilder:
         else:
             print(f"\n  VERIFICATION PASSED")
 
+    def _expected_files(self):
+        """The guest path -> bytes map the image must read back as.
+
+        A symlink's stored payload is its target's ASCII bytes (see
+        ``_plan``), so the same rule applies here; the reader returns that
+        payload as file data.
+        """
+        out = {}
+        for path, (mode, _size, data, link_target) in self.files.items():
+            if mode & S_IFMT == S_IFLNK:
+                out[path] = link_target.encode('ascii', errors='replace')
+            else:
+                out[path] = data
+        return out
+
+    def verify_readback(self, output_path):
+        """Read every regular file back through pyirix.efs.reader and compare.
+
+        Reads the image it has just written, in this process, with the same
+        reader the mount/extract path uses.  A file whose bytes do not survive
+        the round trip is a builder defect that a size check cannot see (the
+        corrupted ``x_eoe.sw64`` of the Foundation 1 tree read back the RIGHT
+        length with the superblock's bytes inside it), so this raises
+        :class:`EFSReadbackError` rather than letting a corrupt medium ship.
+        """
+        mismatched = verify_efs_readback(
+            output_path, expected=self._expected_files())
+        if mismatched:
+            detail = ", ".join(mismatched[:5])
+            if len(mismatched) > 5:
+                detail += ", ... (%d more)" % (len(mismatched) - 5)
+            raise EFSReadbackError(
+                f"{len(mismatched)} file(s) in {output_path} do not read back "
+                f"byte-identical to their source: {detail}")
+        print(f"  Read-back: {len(self.files)}/{len(self.files)} files "
+              f"byte-identical")
+
+
+def verify_efs_readback(image_path, expected):
+    """Return the paths in *image_path* that differ from *expected*.
+
+    *expected* maps guest path -> bytes (the tree that was staged, symlink
+    payloads included).  Every entry is re-read from the image through
+    :mod:`pyirix.efs.reader`; a missing file, a short read or a different byte
+    range lands in the result.  The returned list is empty when the medium is
+    faithful, so the caller decides whether to raise (the builder does) or
+    report.
+    """
+    from pyirix.efs import reader as efs_reader
+
+    wrong = []
+    with open(image_path, 'rb') as f:
+        found = efs_reader.find_efs_partition(f)
+        if found is None:
+            return sorted(expected) or ["<no EFS partition>"]
+        part_offset = found[0]
+        sb = efs_reader.read_superblock(f, part_offset)
+
+        seen = {}
+
+        def walk(ino, prefix):
+            inode = efs_reader.read_inode(f, part_offset, sb, ino)
+            if inode is None:
+                return
+            for name, child in efs_reader.read_dir_entries(
+                    f, part_offset, sb, inode):
+                path = prefix + "/" + name
+                child_inode = efs_reader.read_inode(f, part_offset, sb, child)
+                if child_inode is None:
+                    continue
+                if child_inode['mode'] & S_IFMT == S_IFDIR:
+                    walk(child, path)
+                else:
+                    seen[path] = efs_reader.read_file_data(
+                        f, part_offset, sb, child_inode)
+
+        walk(EFS_ROOT_INODE, "")
+
+    for path, want in expected.items():
+        got = seen.get(path)
+        if got != want:
+            wrong.append(path)
+    return wrong
+
 
 # ── High-level mkfs convenience ──────────────────────────────────────
 
 def _estimate_efs_blocks(files, symlinks, dirs):
-    """Generous block estimate so EFSImageBuilder geometry always fits."""
+    """Blocks needed to hold this tree, from the builder's own geometry rules.
+
+    The old form was ``data + n_dirs + n_nodes // 8 + 256``: it did not know
+    that every cylinder group spends ``cgisize`` blocks on inodes, that each
+    ``firstcg`` block is metadata, that a file with more than 12 extents also
+    spends a block on its extent table, or that the volume's last block is the
+    revolving superblock.  On the real Foundation 1 tree that came out TWO
+    blocks larger than ``fs_size`` while the layout needed 74 more data blocks
+    than the CG data areas held, so the allocator ran off the end.  Estimating
+    from the geometry removes the shortfall at its source; ``EFSImageBuilder``
+    still grows the volume if a tree beats this estimate, and refuses instead
+    of allocating past the end.
+    """
     import math
+
+    files = files or {}
+    symlinks = symlinks or {}
+    dirs = list(dirs or [])
+
+    # Directories: the explicit ones plus every parent a file or symlink
+    # implies (add_file creates those), plus the root.
+    alldirs = set(dirs)
+    for path in list(files) + list(symlinks):
+        parent = os.path.dirname(path) or '/'
+        while parent and parent != '/':
+            alldirs.add(parent)
+            parent = os.path.dirname(parent) or '/'
+    n_dirs = len(alldirs) + 1               # + root
+
+    # Data: file blocks, symlink payload blocks, and one dir block per dir
+    # (build_dir_blocks always emits at least one block).
     data = 0
-    for d in (files or {}).values():
-        data += max(1, math.ceil(len(d) / EFS_BLOCK_SIZE))
-    for t in (symlinks or {}).values():
+    extents_per_file = []
+    for d in files.values():
+        blocks = max(1, math.ceil(len(d) / EFS_BLOCK_SIZE)) if d else 0
+        data += blocks
+        extents_per_file.append(blocks)
+    for _t in symlinks.values():
         data += 1
-    n_dirs = len(dirs or []) + 1            # + root
-    n_nodes = len(files or {}) + len(symlinks or {}) + n_dirs
-    # data + one dir block per dir + inode blocks (32 inodes/block-group) + slack
-    return max(512, data + n_dirs + (n_nodes // 8) + 256)
+        extents_per_file.append(1)
+    data += n_dirs
+
+    n_nodes = len(files) + len(symlinks) + n_dirs
+    ncg = max(1, (n_nodes + 128 + EFS_INOPBB * 8 - 1) // (EFS_INOPBB * 8))
+    cgisize = 8
+
+    # Extent-table blocks: a file needs one for every 64 extents past the
+    # twelfth.  A file's data can be split by CG boundaries, so allow one
+    # extent per 248 blocks plus two per CG it might cross.
+    tables = 0
+    for blocks in extents_per_file:
+        if blocks <= EFS_MAX_EXTENTS:
+            continue
+        est_extents = (math.ceil(blocks / EFS_MAX_EXTENT_LENGTH)
+                       + 2 * ncg)
+        tables += math.ceil(est_extents / (EFS_BLOCK_SIZE // 8))
+    data += tables
+
+    # Solve for a total that leaves `data` in the CG data areas plus the
+    # reserved last block, with the bitmap and inode blocks paid for.  The
+    # bitmap grows with the total, so iterate to a fixed point.
+    total = data + 1 + ncg * cgisize + 2 + 256
+    for _ in range(16):
+        bitmap_blocks = (((total + 7) // 8) + EFS_BLOCK_SIZE - 1) // EFS_BLOCK_SIZE
+        firstcg = 2 + bitmap_blocks
+        need = data + 1 + ncg * cgisize + firstcg
+        if need <= total:
+            break
+        total = need
+    return max(512, total)
 
 
 def mkfs_efs(output_path, files=None, symlinks=None, dirs=None,
@@ -1047,8 +1251,12 @@ def mkfs_efs(output_path, files=None, symlinks=None, dirs=None,
     symlinks = symlinks or {}
     dirs = list(dirs or [])
 
+    # With no explicit budget the estimate is only a SEED: the builder grows the
+    # volume until the whole tree fits (the estimate cannot know the per-CG
+    # inode blocks and indirect-extent tables the layout will need).  An
+    # explicit size_blocks is honoured, and a tree that does not fit is refused.
     blocks = size_blocks or _estimate_efs_blocks(files, symlinks, dirs)
-    b = EFSImageBuilder(blocks)
+    b = EFSImageBuilder(blocks, auto_size=size_blocks is None)
     for p in dirs:
         b.add_directory(p)
     for p, data in files.items():

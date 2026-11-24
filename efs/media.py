@@ -15,6 +15,12 @@ volume): EFS stores each path component's length in a single byte, so a name
 must be 1..255 ASCII bytes with no ``/``; non-ASCII names are rejected because
 the builder would otherwise substitute ``?`` and store the wrong name.  Special
 files (sockets, FIFOs, device nodes) are skipped and recorded, not copied.
+
+CONTENT gets the same rule: after writing, the builder re-reads every file it
+staged through :mod:`pyirix.efs.reader` and raises ``EFSReadbackError`` on any
+mismatch, so a medium whose bytes do not survive the round trip is a build
+error rather than a corrupt install.  A tree that does not fit the volume
+raises ``EFSFullError`` (see :func:`pyirix.efs.builder._estimate_efs_blocks`).
 """
 
 from __future__ import annotations
@@ -26,7 +32,11 @@ import tarfile
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from pyirix.efs.builder import mkfs_efs
+from pyirix.efs.builder import EFSFullError, EFSReadbackError, mkfs_efs
+
+#: Either refusal the builder can make: the tree does not fit the volume, or a
+#: file it wrote does not read back.  Both mean "do not publish this medium".
+EFSRefusedError = (EFSFullError, EFSReadbackError)
 
 #: EFS d_namelen is a single byte, so a path component cannot exceed this.
 EFS_MAX_NAME = 255
@@ -274,6 +284,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 args.tar, args.output, args.blocks, not args.raw
             )
     except (HostTreeError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except EFSRefusedError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
